@@ -17,10 +17,14 @@ import {
   type TrackingStep,
 } from "@/lib/order-tracking";
 import type { OrderShippingAddress } from "@/lib/india-address";
+import { CancelPanel, OrderChangesHistory, ReturnPanel } from "./order-changes";
 
 /**
  * The "My Orders" detail pop-up: tracking timeline, courier details, the
- * lines bought, the price breakdown, payment, delivery and billing address.
+ * lines bought, the price breakdown, payment, delivery and billing address,
+ * and any cancellations or returns. "Cancel order" (until the parcel ships)
+ * and "Return order" (once it's delivered) swap the body for their form
+ * (`order-changes.tsx`) rather than opening a second dialog on top.
  *
  * Same native-<dialog> pattern as `address-dialog.tsx`: the caller mounts
  * it only while an order is selected and it opens itself on mount, so
@@ -37,13 +41,25 @@ export function OrderDetailDialog({
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [mode, setMode] = useState<"details" | "cancel" | "return">("details");
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     dialogRef.current?.showModal();
   }, []);
 
+  // Each view starts at its top, not wherever the last one was scrolled to.
+  useEffect(() => {
+    dialogRef.current?.scrollTo({ top: 0 });
+  }, [mode]);
+
   function requestClose() {
     dialogRef.current?.close();
+  }
+
+  function finish(message: string) {
+    setNotice(message);
+    setMode("details");
   }
 
   const status = orderStatusBadge(order);
@@ -53,8 +69,17 @@ export function OrderDetailDialog({
   // the delivery one.
   const billingAddress = order.billingAddress ?? order.shippingAddress;
   const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
-  const hasEbook = order.items.some((item) => item.includesEbook);
-  const ebookReady = hasEbook && !["PENDING", "CANCELLED", "REFUNDED"].includes(order.status);
+  const ebookLines = order.items.filter((item) => item.includesEbook);
+  const hasEbook = ebookLines.length > 0;
+  // A cancelled e-book, or one in a return, no longer downloads.
+  const liveEbook = ebookLines.some((item) => !item.cancelled && item.returnedQuantity === 0);
+  const ebookReady = liveEbook && !["PENDING", "CANCELLED", "REFUNDED"].includes(order.status);
+  const ebookPaused =
+    !ebookReady &&
+    ebookLines.some((item) => !item.cancelled && item.returnedQuantity > 0) &&
+    order.returns.some((orderReturn) => orderReturn.status === "REQUESTED" || orderReturn.status === "APPROVED");
+  const windowClosed =
+    !order.canReturn && order.shipmentStatus === "DELIVERED" && order.returnWindowEndsAt && new Date(order.returnWindowEndsAt) <= new Date();
 
   return (
     <dialog
@@ -89,7 +114,16 @@ export function OrderDetailDialog({
         </button>
       </div>
 
-      <div className="grid gap-7 px-6 py-6">
+      {mode === "cancel" && <CancelPanel order={order} onBack={() => setMode("details")} onDone={finish} />}
+      {mode === "return" && <ReturnPanel order={order} onBack={() => setMode("details")} onDone={finish} />}
+
+      <div className={cn("grid gap-7 px-6 py-6", mode !== "details" && "hidden")}>
+        {notice && (
+          <p role="status" className="rounded-tile bg-tile px-4 py-3 text-sm font-bold text-ok inset-ring inset-ring-card-edge">
+            {notice}
+          </p>
+        )}
+
         <section aria-labelledby="order-tracking-heading">
           <h3 id="order-tracking-heading" className="caps text-ink-muted">
             Tracking
@@ -111,9 +145,22 @@ export function OrderDetailDialog({
                 </>
               ) : order.status === "PENDING" ? (
                 "Your e-book unlocks in your digital library as soon as payment is confirmed."
+              ) : ebookPaused ? (
+                "Your e-book is paused while we look at your return."
               ) : (
                 "E-book access ended with this order."
               )}
+            </p>
+          )}
+
+          {order.canReturn && order.returnWindowEndsAt && (
+            <p className="mt-4 text-sm text-ink-muted">
+              You can return printed items in their unopened packaging until {formatOrderDate(order.returnWindowEndsAt)}.
+            </p>
+          )}
+          {windowClosed && order.returnWindowEndsAt && (
+            <p className="mt-4 text-sm text-ink-muted">
+              The return window for this order closed on {formatOrderDate(order.returnWindowEndsAt)}.
             </p>
           )}
         </section>
@@ -144,6 +191,15 @@ export function OrderDetailDialog({
                   <p className="mt-0.5 text-[13px] text-ink-muted tabular-nums">
                     {item.quantity} × {formatINRWhole(item.unitPriceCents)}
                   </p>
+                  {(item.cancelled || item.returnedQuantity > 0) && (
+                    <p className="mt-0.5 text-[13px] font-bold text-ink-muted">
+                      {item.cancelled
+                        ? "Cancelled"
+                        : item.returnedQuantity >= item.quantity
+                          ? "In a return"
+                          : `${item.returnedQuantity} of ${item.quantity} in a return`}
+                    </p>
+                  )}
                 </div>
                 <p className="shrink-0 font-bold tabular-nums">
                   {formatINRWhole(item.quantity * item.unitPriceCents)}
@@ -152,6 +208,8 @@ export function OrderDetailDialog({
             ))}
           </ul>
         </section>
+
+        <OrderChangesHistory order={order} />
 
         <div className="grid gap-7 sm:grid-cols-2">
           <section aria-labelledby="order-payment-heading">
@@ -213,12 +271,40 @@ export function OrderDetailDialog({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-6 py-4">
-        <p className="text-[13px] text-ink-muted">Need help? Quote order {order.ref} when you contact us.</p>
-        <button type="button" className={buttonClass("secondary", "sm")} onClick={requestClose}>
-          Close
-        </button>
-      </div>
+      {mode === "details" && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-6 py-4">
+          <p className="text-[13px] text-ink-muted">Need help? Quote order {order.ref} when you contact us.</p>
+          <div className="flex flex-wrap gap-2">
+            {order.canCancel && (
+              <button
+                type="button"
+                className={buttonClass("ghost", "sm")}
+                onClick={() => {
+                  setNotice(null);
+                  setMode("cancel");
+                }}
+              >
+                Cancel order
+              </button>
+            )}
+            {order.canReturn && (
+              <button
+                type="button"
+                className={buttonClass("ghost", "sm")}
+                onClick={() => {
+                  setNotice(null);
+                  setMode("return");
+                }}
+              >
+                Return order
+              </button>
+            )}
+            <button type="button" className={buttonClass("secondary", "sm")} onClick={requestClose}>
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </dialog>
   );
 }

@@ -132,11 +132,22 @@ async function fetchBookPageFromDb({
   const decoded = decodeCursor(cursor);
 
   const where = buildBookWhere(query, productLine);
+  // A date sort's cursor carries epoch milliseconds (`SORT_KEYS.new`), and
+  // Prisma only takes a Date for a DateTime column.
+  const s = decoded && DATE_COLUMNS.has(column) ? new Date(decoded.s) : decoded?.s;
   const keyset: Prisma.ProductWhereInput | undefined = decoded
     ? {
-        OR: [
-          { [column]: dir === "asc" ? { gt: decoded.s } : { lt: decoded.s } },
-          { [column]: decoded.s, id: dir === "asc" ? { gt: decoded.id } : { lt: decoded.id } },
+        AND: [
+          // Implied by the OR below, but Postgres can't derive it from an OR:
+          // spelled out, it's what lets the (productLine, <column>, id) index
+          // seek straight to the cursor instead of re-reading every earlier row.
+          { [column]: dir === "asc" ? { gte: s } : { lte: s } },
+          {
+            OR: [
+              { [column]: dir === "asc" ? { gt: s } : { lt: s } },
+              { [column]: s, id: dir === "asc" ? { gt: decoded.id } : { lt: decoded.id } },
+            ],
+          },
         ],
       }
     : undefined;
@@ -157,6 +168,8 @@ async function fetchBookPageFromDb({
 }
 
 type SortColumn = "priceCents" | "title" | "publishedAt" | "createdAt" | "ratingAvg" | "reviewCount";
+
+const DATE_COLUMNS: ReadonlySet<SortColumn> = new Set(["publishedAt", "createdAt"]);
 
 const SORT_COLUMN: Record<string, SortColumn> = {
   price: "priceCents",

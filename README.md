@@ -1,158 +1,129 @@
-# Digital Storefront — Shashibhushan's New School Book Press
+# Digital Storefront: Shashibhushan's New School Book Press
 
-Starter monorepo for the platform described in the Technical Design
-Document (`Digital_Storefront_Technical_Design_Document_v1.1.docx`). This
-is Phase 0 scaffolding: real project structure, a complete Prisma schema,
-shared packages with working (but simplified) implementations, and stub
-pages for every module in the BRD's functional requirements — not a
-finished app. Every stub page has a comment pointing back to the FR/section
-it implements.
+An online shop and back office for the Press. It sells printed books and
+e-books plus other educational, professional, digital and lifestyle
+products, and offers e-book services and self-publishing.
 
-## What's here
+- `apps/web` is the customer storefront: catalogue, cart, checkout, My
+  Orders, My Library and the publishing pages.
+- `apps/admin` is the staff back office: catalogue and website CMS, sales
+  orders, purchasing and staff management.
 
-```
-apps/
-  web/     — customer storefront (catalogue, cart, checkout, self-publishing wizard, account)
-  admin/   — internal back office (catalogue CMS, orders, submissions queue, royalties, roles)
-packages/
-  database/ — Prisma schema (single source of truth) + client
-  auth/     — Supabase Auth server/client helpers, role guards, middleware factory
-  payments/ — Razorpay order creation + signature verification
-  storage/  — Vercel Blob upload/staging helpers + Cloudmersive malware scan
-  email/    — Resend + React Email templates
-  ui/       — shared button component + cn() utility (shadcn/ui-style)
-  config/   — shared tsconfig, eslint, Tailwind v4 design tokens
-```
+They're two separate Next.js 16 apps in one npm workspaces + Turborepo
+monorepo. They share code through `packages/*` and data through one Supabase
+Postgres database, and are deployed separately. Business terms are defined
+in [`CONTEXT.md`](CONTEXT.md). Guidance for contributors and agents is in
+[`CLAUDE.md`](CLAUDE.md) and each app's own `CLAUDE.md`.
 
-## How "monorepo" and "two standalone apps" fit together
+## Environments
 
-`apps/web` and `apps/admin` **are** two independent Next.js applications —
-separate `package.json`, separate `next.config.ts`, separate ports, separate
-build output, separate production URLs. The monorepo doesn't merge them
-into one runtime; it's a way to share the *source code* in `packages/*`
-(the Prisma schema, auth helpers, Razorpay adapter, etc.) between two
-otherwise unrelated apps via npm workspace symlinks, and to let Turborepo
-run/build/cache both efficiently from one `npm install`.
+| | dev | production |
+|---|---|---|
+| Branch | `dev` | `main` |
+| Hosting | Vercel (Preview deployments) | Hostinger (two Node.js websites) |
+| Supabase | `storefront-dev`, `admin-auth-dev` | `storefront-prod`, `admin-auth-prod` |
+| Payments | Razorpay test mode | Razorpay live |
 
-At build time, each app only bundles the shared package code it actually
-imports (`transpilePackages` in each `next.config.ts`). At runtime, `web`
-and `admin` never call each other over HTTP — they're fully decoupled and
-only happen to read/write the same Supabase Postgres database.
-
-> **Package manager:** this repo uses npm workspaces (root `package.json`
-> has a `"workspaces"` field; internal `@repo/*` deps are pinned to `"*"`
-> so npm links them to the local package instead of fetching from the
-> registry). Everything below assumes `npm`, not `pnpm`.
-
-**Running them:**
-```bash
-npm run dev          # both apps in parallel — web:3000, admin:3001
-npm run dev:web      # storefront only
-npm run dev:admin    # back office only
-```
-Either one runs fine on its own, as long as `packages/database`'s Prisma
-client has been generated once (`npm run db:generate` — both apps import
-`@repo/database`) and that app's own `.env.local` is filled in.
-
-**Deploying them:** two separate Vercel projects pointing at the *same*
-GitHub repo. In each project's Settings → General, set **Root Directory**
-to `apps/web` or `apps/admin`. Vercel detects the npm workspace + Turborepo
-setup automatically (via `package-lock.json` and `turbo.json`), installs
-once from the repo root, then builds only that app's directory — giving
-you two independently deployed, independently scaled apps with separate
-env vars and separate URLs (e.g. `yourdomain.com` and
-`admin.yourdomain.com`), exactly as described in the Technical Design
-Document's HLD (Section 2.2).
-
-## Before you run anything — accounts to create
-
-Per the Technical Design Document's "Credential sovereignty" note (Section
-6): create every one of these under the Publisher's own corporate
-email/organization, not a personal developer account. Migrating ownership
-later is a real cost.
-
-1. **GitHub** — organization + this repo, private.
-2. **Vercel** — team account linked to the GitHub org; two projects (`web`, `admin`) once the repo is pushed.
-3. **Supabase** — **two** projects:
-   - *Storefront* project (Postgres + customer Auth). From Project Settings: API → `Project URL`, `anon public` key, `service_role` key; Database → pooled `DATABASE_URL` and direct `DIRECT_URL`.
-   - *Admin auth* project — authentication for `apps/admin` only, so staff identities can't be created by the storefront's public signup. Run `docs/setup/admin-auth-project.sh` for the guided setup (creates the project's `users` table via `sync_staff.sql`, disables sign-ups, creates the Owner). `apps/admin` still uses the storefront project's Postgres and Storage.
-4. **Razorpay** — business account (test mode keys are enough to start); note the Key ID/Secret and set up a webhook once you have a deploy URL.
-5. **Resend** — account + a verified sending domain (or use their sandbox domain while testing).
-6. **Domain/DNS** — registrar account under the Publisher's org, if not already owned.
+Work happens on `dev`. Merging `dev` into `main` is a release. Setup and
+release steps are in
+[`docs/setup/environments.md`](docs/setup/environments.md).
 
 ## Local setup
 
+You need Node 22, npm and Git Bash (on Windows) for the setup wizards.
+
 ```bash
-npm install                                     # from the repo root — links all workspace packages
-cp apps/web/.env.example apps/web/.env.local     # fill in with the values gathered above
-cp apps/admin/.env.example apps/admin/.env.local # admin's template differs: no web-only vars (e.g. NEXT_PUBLIC_RAZORPAY_KEY_ID), plus its own NEXT_PUBLIC_AUTH_SUPABASE_* (separate auth project) and SUPABASE_SERVICE_ROLE_KEY
-cp packages/database/.env.example packages/database/.env # DATABASE_URL/DIRECT_URL, read by the Prisma CLI directly
-
-npm run db:generate                   # generate the Prisma client
-npm run db:migrate                    # create tables in the storefront Supabase project
-# then, in the STOREFRONT project's SQL editor, run:
-#   packages/database/prisma/sql/sync_user.sql
-# (keeps public.users in sync with Supabase's auth.users, and sets up the
-# starter Row-Level Security policies)
-#
-# and set up the separate ADMIN AUTH project (guided):
-bash docs/setup/admin-auth-project.sh
-# (creates its users table via sync_staff.sql, disables sign-ups, creates
-# the Owner, and prints the NEXT_PUBLIC_AUTH_SUPABASE_* values for
-# apps/admin/.env.local)
-
-npm run seed --workspace=@repo/database   # optional: seeds CMS defaults + one sample service package
-
-npm run dev                           # runs both apps via Turborepo
-# apps/web   → http://localhost:3000
-# apps/admin → http://localhost:3001
+npm install
+cp apps/web/.env.example apps/web/.env.local
+cp apps/admin/.env.example apps/admin/.env.local
+cp packages/database/.env.example packages/database/.env
+npm run db:generate
 ```
 
-## What's real vs. what's a stub
+Point the env files at the **dev** Supabase projects. The wizard
+`bash docs/setup/environments.sh dev` collects every value. It writes
+`.env.dev.web.local` and `.env.dev.admin.local` at the repo root, which you
+can copy into the two `.env.local` files. Then:
 
-**Real / working today:**
-- Prisma schema — every entity from the BRD's Data Model Overview, with enums, indexes, and relations.
-- `packages/auth` — actual Supabase SSR client setup (server + browser) and a reusable middleware factory with role-gating. `apps/web` and `apps/admin` authenticate against **separate Supabase projects** (`packages/auth/src/env.ts`); a storefront customer account can't reach the back office.
-- `packages/payments` — real Razorpay order creation, payment signature verification, and webhook signature verification.
-- The Razorpay webhook route (`apps/web/app/api/webhooks/razorpay/route.ts`) — marks orders PAID and sends the order confirmation email on `payment.captured`.
-- `packages/email` — real Resend + React Email templates.
-- All list/detail pages that read from Postgres (homepage, catalogue, orders, submissions queue, royalties, analytics) — these run real Prisma queries today.
-- **Admin catalogue create/edit/publish forms** (`apps/admin/app/educational-material/books`) — full CRUD with Zod validation, `assertRole`, and `AuditLog` entries. The form adapts to what you're selling (printed book / e-book / service package) and only asks for the fields that apply, generates the web address from the title, and takes the front cover from a **file picker with a live preview** rather than asking for a URL.
-- **Admin inventory CMS for three more Educational Materials lines** (`apps/admin/app/educational-material/{educational-charts,worksheets-activity-puzzles,teaching-learning-materials}`) — same list/create/edit/publish shape as Books, sharing one trimmed form + Server Actions in `educational-material/_shared/`; each writes its own `Product.productLine` value, and the Books views (admin + storefront) now filter to `productLine: "BOOK"` so the three don't leak into the book listings.
-- **Cover and banner image upload** (`apps/admin/app/api/uploads` → `packages/storage`'s `uploadImage`) — role-checked, 4 MB cap, magic-byte type verification, SVG refused. Stores to the public `images` Supabase Storage bucket via `NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (no separate token); without those the image fields say so and fall back to pasting a link.
-- **E-book PDF upload + paid download, end to end.** The admin book form shows an "Upload .pdf file" field whenever "E-book" is ticked; the browser uploads straight to a **private** `ebooks` Supabase Storage bucket via a signed URL (no request-body size cap) and the action records a `FileAsset` (`kind EBOOK_FILE`, `maxDownloads 5`). On the storefront, "Buy now" / the cart pay button require sign-in, `startCheckout` creates the `Order`/`Payment` and a real Razorpay order, Razorpay Checkout opens, `confirmCheckout` verifies the signature and flips the order to PAID, and the shopper lands on **My Library** — which lists every purchased e-book with a working download served by `api/library/[assetId]` (entitlement + download-count checked, mints a ~5-minute signed URL). The Razorpay webhook stays the idempotent source of truth for status.
-- **Admin order fulfilment** (`apps/admin/app/supply/sales-orders`) — marking a parcel *Shipping* asks for the courier and tracking number (they feed the customer's tracking link on My Orders) and emails the customer that it's on its way (`sendOrderShipped`, best-effort, sent directly — no job queue). COD orders get a "Mark cash collected" button once the parcel has gone out (Payment → CAPTURED, `AuditLog`ged as `sales_order.cod_collected`). Nothing here can mark an online order paid — that stays with `settleOrderPayment`.
-- **Admin-as-CMS for the storefront** (`apps/admin/app/settings/site`, `settings/navigation`, `settings/pricing`, `content/banners`, `content/homepage`, `content/faqs`, `content/testimonials`) — site branding/SEO defaults, header/footer nav, the homepage hero, **every other homepage heading and description**, FAQs, testimonials, and **the pricing rules** are all admin-managed rows (`SiteSettings`, `NavLink`, `Banner`, `ContentBlock`, `Faq`, `Testimonial`, `PricingSettings`, `ClassSetTier`, `DiscountCode`) that `apps/web`'s root layout, header, footer, homepage, product pages and cart read directly — no runtime call between the two apps, same shared-Postgres pattern as `Product`. Per-product SEO fields (`metaTitle`/`metaDescription`/`ogImageUrl`) are also admin-editable and rendered via `generateMetadata` on the product detail pages.
-  - *Homepage text* works off a registry in `packages/database/src/content.ts` that carries each string's label, help text and **default copy**; the database stores only overrides, so clearing a box in the admin restores the original wording and the storefront can never render blank.
-  - *Pricing & delivery* covers the free-delivery threshold, express/same-day fees and their arrival wording, the print + e-book bundle uplift, GST rates and class-set quantity discounts. Checkout coupon codes have their own page, *Users and Staffs → Discount* (`apps/admin/app/discounts`): percentage or flat amount, optional cap, minimum order, start/end dates, and total and per-customer use limits, all re-checked server-side at checkout. The defaults reproduce exactly what the storefront used to hardcode.
+```bash
+npm run db:migrate                         # dev database only, never production
+npm run seed --workspace=@repo/database    # CMS defaults + one sample service package
+npm run dev                                # web → :3000, admin → :3001
+```
 
-**Stubbed — needs implementation:**
-- Sign-in UI (Supabase Auth's email/OAuth components aren't wired into `app/sign-in`).
-- Add-to-cart Server Action (adding to the cart is still client-side; a signed-in customer's cart is now saved to their account — `carts` table, `apps/web/components/commerce/cart-sync.tsx`). Checkout itself is now wired (`apps/web/app/(checkout)/actions.ts` — `startCheckout`/`confirmCheckout` + Razorpay Checkout on the client); the class-set **bundle** line is priced from its component editions' DB prices until `Product` carries real multi-format pricing.
-- The self-publishing wizard's actual multi-step form (currently a static step list).
-- The customer-manuscript staging → malware-scan → promote pipeline end-to-end (the pieces exist in `packages/storage`, including `scanUpload()`, which calls Cloudmersive and fails closed — files stay `PENDING` without `CLOUDMERSIVE_API_KEY` — but nothing yet calls the scan or promotes scanned files). Admin e-book PDF uploads deliberately skip this, like image uploads.
-- Refund flow, review moderation actions.
-- Product-line/department categorization in the UI — `Product.productLine` (the 8 lines across 5 departments) is a real schema field now, and `packages/database/src/taxonomy.ts` is its canonical label list, but `apps/admin`'s `FIXED_DEPARTMENTS` and `apps/web`'s `buildDepartments()` still hardcode their own copy instead of reading from it. Four of the eight lines now have an admin CMS that writes the field (Books plus Educational Charts / Worksheets & Activity Puzzles / Teaching & Learning Materials); the storefront still has no per-line browsing for the latter three. See root `CLAUDE.md`'s "Product & service taxonomy" section.
+A brand-new Supabase project also needs some one-off setup:
+- Run `packages/database/prisma/sql/sync_user.sql` and `auto_enable_rls.sql`
+  in the storefront project's SQL editor.
+- Set up the staff auth project with `bash docs/setup/admin-auth-project.sh`.
+- Run `npm run harden-buckets --workspace=@repo/storage` for the Storage
+  buckets.
 
-## Suggested order of work
+## What's built
 
-Matches the roadmap in the Technical Design Document, Section 9:
+**Storefront**
+- Catalogue for Books (paperback / hardcover / e-book editions) and three
+  more Educational Materials lines. It uses cursor paging, filters and
+  sorting, and is tag-cached.
+- Product pages, plus every homepage string, banner, FAQ, testimonial,
+  menu and price rule read from the admin CMS.
+- Sign-up and sign-in, saved addresses and wishlist. The cart is saved to
+  the account.
+- Checkout: cash on delivery, or Razorpay (UPI, net banking, cards) with
+  server-side re-pricing, discount codes and the signature-verified
+  webhook.
+- My Orders, with shipment tracking, cancel order and return order.
+- My Library: entitled e-book downloads with a per-customer allowance.
+- Policy pages (privacy, terms, refund, shipping, contact), sitemap and
+  robots.
 
-1. Finish auth end-to-end (sign-in/sign-up UI, session on both apps, confirm `sync_user.sql` fires on the storefront project and `sync_staff.sql` on the admin auth project). The "revamped admin auth" work (`settings/roles` staff management) also lands here.
-2. ~~Checkout Server Action + Razorpay Checkout on the client~~ — done (`startCheckout`/`confirmCheckout`, e-book delivery to My Library). Still open: add-to-cart Server Action. (Server-side cart persistence per account is done.)
-3. ~~Admin catalogue CRUD~~ — done; admin is now the CMS for the whole storefront (site settings, nav, hero, every homepage heading and description, FAQs, testimonials, and pricing), with cover-image upload built into the catalogue form.
-4. Self-publishing wizard (steps 1–6), file upload + malware scan pipeline.
-5. Submissions queue actions (assign, move status, publish → auto-create Product), royalty calculation job.
-6. Reviews, notifications end-to-end, accessibility/security pass before launch.
+**Back office**
+- Owner-invited staff with roles (Support / Editor / Owner). There's no
+  self sign-up, and the app uses a separate auth project.
+- Product CMS for Books and the three simple Educational Materials lines,
+  with cover upload and e-book PDF upload.
+- Website CMS: site settings, navigation, banners, homepage text, FAQs,
+  testimonials, pricing and delivery rules, discount codes, menu
+  categories.
+- Sales orders: accept or deny, ship (courier + tracking, email), deliver,
+  COD collection, customer cancellations, returns, and recording manual
+  refunds.
+- Purchase orders and vendors: receiving adds stock.
+- Every change is recorded in an audit log.
 
-## A note on this scaffold
+**Platform**
+- Security:
+  - Nonce CSP and security headers.
+  - Data API locked down with RLS.
+  - Rate limits.
+  - Production boot checks for misconfiguration.
+  - CI security scans.
+- Data caching with tag invalidation (Redis on Hostinger).
+- Tests: unit, contract, integration, migration, E2E, accessibility, visual
+  and performance (`docs/testing.md`).
 
-Package versions in each `package.json` are pinned to the majors called out
-in the Technical Design Document (Next.js 16, React 19, Prisma 7, Tailwind
-v4) — run `npm install` and let your lockfile resolve exact minor/patch
-versions at build time, since those move fast. This sandbox's network
-policy blocked fetching Prisma's engine binaries, so `prisma validate` /
-`prisma generate` haven't been run here — do that as your first step
-locally to confirm the schema compiles cleanly (it's been checked by hand
-for balanced relations and syntax, but Prisma's own validator is the real
-test).
+## Not built yet
+
+**In launch scope:**
+- **Self-publishing wizard.** Today it's a static step list. It needs the
+  multi-step form plus the customer-upload pipeline: staging →
+  `scanUpload()` (Cloudmersive) → promote. The pieces exist in
+  `packages/storage`, but nothing calls them yet.
+- **The remaining product lines.** Advocate's Diary, Naya Bandhu
+  (Application), Digital Tracking System, Indoor Plants and Bulk Publishing
+  are still `EmptyState` stubs in admin and static pages on the storefront.
+
+**Cut from launch** (hidden or read-only at launch):
+- Customer reviews and the moderation queue. `reviews` in admin is
+  read-only.
+- Submissions-queue actions and royalty calculation. `submissions` and
+  `royalties` in admin are read-only.
+
+**Known gaps:**
+- No refund integration: staff refund from the Razorpay dashboard and
+  record it.
+- No job queue, by decision. Abandoned `PENDING` orders aren't expired.
+- Staff 2FA was removed (deferred).
+
+Open security items are tracked in
+[`docs/security-roadmap.md`](docs/security-roadmap.md). The go-live
+checklist is [`docs/production-launch.md`](docs/production-launch.md).

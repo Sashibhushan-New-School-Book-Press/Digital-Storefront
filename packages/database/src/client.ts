@@ -94,6 +94,10 @@ export * from "./shipment";
 // Taking stock off the shelf for an order and putting it back when one is
 // cancelled — by checkout in apps/web, by a refused sales order in apps/admin.
 export * from "./stock";
+// Customer cancellations and returns: what can still be called off or sent
+// back, and what it refunds — My Orders in apps/web, Sales Orders in apps/admin.
+export * from "./returns";
+export * from "./downloads";
 
 import { mergeContent, type ContentMap } from "./content";
 import {

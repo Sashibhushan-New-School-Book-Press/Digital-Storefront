@@ -10,6 +10,10 @@ import { prisma, type OrderStatus, type Prisma } from "@repo/database";
  *    a title that also sells as an e-book does not unlock the PDF;
  *  - only while the order is paid or further along in fulfilment (a
  *    refunded or cancelled order loses access);
+ *  - only while that line stands: a line the customer cancelled, or one in a
+ *    return that wasn't rejected, loses access (a return under review
+ *    suspends it, so nothing can be downloaded while it's decided — see
+ *    `@repo/database`'s returns.ts);
  *  - only for files that passed the malware scan.
  *
  * Downloads are counted per (customer, file) in `LibraryDownload`, against
@@ -23,15 +27,21 @@ export const ENTITLING_ORDER_STATUSES: OrderStatus[] = [
   "READY_FOR_DOWNLOAD",
 ];
 
+/** An order line that still entitles `userId` to its product's e-book. */
+function entitlingLineWhere(userId: string): Prisma.OrderItemWhereInput {
+  return {
+    includesEbook: true,
+    cancellationId: null,
+    returnItems: { none: { orderReturn: { status: { not: "REJECTED" } } } },
+    order: { userId, status: { in: ENTITLING_ORDER_STATUSES } },
+  };
+}
+
 export function entitledAssetsWhere(userId: string): Prisma.FileAssetWhereInput {
   return {
     kind: "EBOOK_FILE",
     malwareScanStatus: "CLEAN",
-    product: {
-      orderItems: {
-        some: { includesEbook: true, order: { userId, status: { in: ENTITLING_ORDER_STATUSES } } },
-      },
-    },
+    product: { orderItems: { some: entitlingLineWhere(userId) } },
   };
 }
 
@@ -40,16 +50,12 @@ export function entitledAssetsWhere(userId: string): Prisma.FileAssetWhereInput 
  * by the same rule as `entitledAssetsWhere` minus the file checks — a
  * purchase is what's owned, whether or not its PDF has been uploaded yet.
  * The book page disables the e-book option on it and checkout refuses to
- * sell it twice.
+ * sell it twice; once cancelled or returned it can be bought again.
  */
 export async function ownsEbook(userId: string, productIds: string[]): Promise<boolean> {
   if (!productIds.length) return false;
   const line = await prisma.orderItem.findFirst({
-    where: {
-      productId: { in: productIds },
-      includesEbook: true,
-      order: { userId, status: { in: ENTITLING_ORDER_STATUSES } },
-    },
+    where: { productId: { in: productIds }, ...entitlingLineWhere(userId) },
     select: { id: true },
   });
   return line !== null;

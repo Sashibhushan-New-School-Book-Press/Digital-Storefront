@@ -3,7 +3,7 @@
 import { revalidatePath, revalidateTag } from "next/cache";
 import { after } from "next/server";
 import { z } from "zod";
-import { hasOnlinePart, nextShipmentStatus, prisma, returnStock, type Prisma, type ShipmentStatus } from "@repo/database";
+import { hasOnlinePart, nextShipmentStatus, prisma, returnStock, type ShipmentStatus } from "@repo/database";
 import { getCurrentStaff } from "@repo/auth/server";
 import { assertRole, ORDER_WRITE_ROLES } from "@repo/auth/roles";
 import { sendOrderShipped } from "@repo/email";
@@ -11,6 +11,7 @@ import { stockReturnedTags } from "@repo/cache/tags";
 import { revalidateStorefront } from "@/lib/storefront-cache";
 import { ORDER_STATS_TAG } from "@/lib/admin-cache";
 import { canMarkCashCollected } from "./cod";
+import { shippingEmail, storefrontOrdersUrl } from "./customer";
 
 const SHIPMENT_STATUSES = [
   "AWAITING_APPROVAL",
@@ -101,6 +102,7 @@ export async function moveSalesOrder(input: z.input<typeof moveSchema>): Promise
           quantity: true,
           fulfillmentType: true,
           includesEbook: true,
+          cancellationId: true,
           product: { select: { slug: true, productLine: true, type: true } },
         },
       },
@@ -111,8 +113,11 @@ export async function moveSalesOrder(input: z.input<typeof moveSchema>): Promise
     return { ok: false, error: "This order has already been cancelled." };
   }
 
-  const cancelWholeOrder = to === "CANCELLED" && !hasOnlinePart(order.items);
-  const shippedItems = order.items.filter((item) => item.fulfillmentType === "SHIP");
+  // Lines the customer already cancelled from My Orders are out of it:
+  // their copies are back on the shelf and their e-book no longer counts.
+  const standing = order.items.filter((item) => item.cancellationId === null);
+  const cancelWholeOrder = to === "CANCELLED" && !hasOnlinePart(standing);
+  const shippedItems = standing.filter((item) => item.fulfillmentType === "SHIP");
   const shipped = shippedItems.map(({ productId, bookFormat, quantity }) => ({ productId, bookFormat, quantity }));
 
   const moved = await prisma.$transaction(async (tx) => {
@@ -122,6 +127,8 @@ export async function moveSalesOrder(input: z.input<typeof moveSchema>): Promise
         shipmentStatus: to,
         ...(cancelWholeOrder && { status: "CANCELLED" }),
         ...(to === "SHIPPED" && { carrier, trackingNumber }),
+        // The customer's return window counts from here.
+        ...(to === "DELIVERED" && { deliveredAt: new Date() }),
       },
     });
     // Checkout took these copies off the shelf; a refused parcel puts them
@@ -230,23 +237,4 @@ export async function markCashCollected(input: { orderId: string }): Promise<Mov
   // The dashboard's cached revenue and order figures.
   revalidateTag(ORDER_STATS_TAG, { expire: 0 });
   return { ok: true };
-}
-
-/** The customer's My Orders page on the storefront, for the shipped email's button. */
-function storefrontOrdersUrl(): string | null {
-  const storefrontUrl = process.env.NEXT_PUBLIC_STOREFRONT_URL?.trim();
-  if (!storefrontUrl) return null;
-  try {
-    return new URL("/account/orders", storefrontUrl).toString();
-  } catch {
-    return null;
-  }
-}
-
-/** The email typed at checkout, from the `shippingAddress` snapshot. */
-function shippingEmail(address: Prisma.JsonValue): string | null {
-  if (address && typeof address === "object" && !Array.isArray(address) && typeof address.email === "string") {
-    return address.email;
-  }
-  return null;
 }

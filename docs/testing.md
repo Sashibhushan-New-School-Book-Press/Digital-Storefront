@@ -147,8 +147,8 @@ go to `testing/performance/reports/` (gitignored, never uploaded).
 policy page (default 20 connections × 20s each, `LOAD_CONNECTIONS` /
 `LOAD_DURATION`), after a warm-up, against p99-latency and error-rate
 budgets. 429s are reported apart from errors — one IP trips the rate limiter
-by design. Run it against a production build or staging, **never
-production**; non-local targets need `--confirm-remote`.
+by design. Run it against a local production build or the dev environment,
+**never production**. Non-local targets need `--confirm-remote`.
 
 ## CI/CD
 
@@ -157,20 +157,31 @@ production**; non-local targets need `--confirm-remote`.
 | `security.yml` | push, PR, weekly | typecheck, lint, unit + contract tests; npm audit; gitleaks; CodeQL |
 | `ci.yml` | push, PR | migrations + integration (Postgres service); E2E per app incl. a11y, visual, security, API |
 | `nightly.yml` | 03:00 IST, manual | cross-browser and device matrix |
-| `post-deploy.yml` | each successful Vercel deployment | smoke/sanity/security on the live URL, ZAP baseline, Lighthouse |
-| `load-test.yml` | manual | load test against a staging URL you enter |
-| `db-migrate.yml` | manual | `prisma migrate deploy` to staging or production (GitHub environment approval) |
+| `post-deploy.yml` | each successful Vercel (dev) deployment | smoke, sanity and security on the deployed URL; ZAP baseline; Lighthouse |
+| `load-test.yml` | manual | load test against a dev URL you enter |
+| `db-migrate.yml` | manual | `prisma migrate deploy` to `dev` or `production` (the GitHub environment needs approval) |
 
-Deploys themselves stay with Vercel's Git integration (a preview per PR,
-production from `main`); these workflows gate and verify them.
+Deploys happen outside these workflows (`docs/setup/environments.md`):
+- `dev` deploys to Vercel Preview.
+- `main` deploys to Hostinger.
+
+The workflows gate and verify them. Comments in the workflow files say
+"staging"; that means the dev environment.
 
 Repository secrets they read (each job skips cleanly without its secrets):
 
-- `WEB_ENV_FILE`, `ADMIN_ENV_FILE` — the full `.env.local` for each app,
-  pointing at **staging** (staging Supabase, Razorpay test keys).
+- `WEB_ENV_FILE`, `ADMIN_ENV_FILE`: the full `.env.local` for each app,
+  pointing at **dev** (dev Supabase, Razorpay test keys). Never use
+  production values here.
 - `E2E_CUSTOMER_EMAIL`/`_PASSWORD`, `E2E_STAFF_EMAIL`/`_PASSWORD` — optional
   test accounts.
-- `VERCEL_AUTOMATION_BYPASS_SECRET` — Vercel → project → Deployment
-  Protection → Protection Bypass for Automation.
-- Environments `staging` and `production`, each with a `DIRECT_URL` secret,
-  for `db-migrate.yml`; give `production` required reviewers.
+- `VERCEL_AUTOMATION_BYPASS_SECRET_WEB` / `VERCEL_AUTOMATION_BYPASS_SECRET_ADMIN`
+  — each Vercel project's token from Settings → Deployment Protection →
+  Protection Bypass for Automation (one `VERCEL_AUTOMATION_BYPASS_SECRET`
+  works too if both projects share a value). Without the app's token,
+  `post-deploy.yml` skips its checks with a warning, since every request
+  would land on vercel.com/login. Hostinger reports no deployments to
+  GitHub, so the post-deploy checks against production are run by hand with
+  `E2E_WEB_URL` / `E2E_ADMIN_URL`.
+- GitHub Environments `dev` and `production`, each with a `DIRECT_URL`
+  secret, for `db-migrate.yml`. Give `production` required reviewers.

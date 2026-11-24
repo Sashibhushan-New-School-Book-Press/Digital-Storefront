@@ -34,10 +34,11 @@ export const SAMPLE_ORDERS: SampleOrder[] = [
     discountCode: null,
     trackingNumber: "IN482910422",
     carrier: "BlueDart",
+    deliveredAt: day(9),
     createdAt: day(12),
     updatedAt: day(9),
     items: [
-      { id: "item-1", orderId: "order-10482", productId: "book-1", quantity: 1, unitPriceCents: 249900, fulfillmentType: "SHIP", includesEbook: false, bookFormat: "PAPERBACK" },
+      { id: "item-1", orderId: "order-10482", productId: "book-1", quantity: 1, unitPriceCents: 249900, fulfillmentType: "SHIP", includesEbook: false, bookFormat: "PAPERBACK", cancellationId: null },
     ],
   },
   {
@@ -60,10 +61,11 @@ export const SAMPLE_ORDERS: SampleOrder[] = [
     discountCode: null,
     trackingNumber: null,
     carrier: null,
+    deliveredAt: null,
     createdAt: day(15),
     updatedAt: day(15),
     items: [
-      { id: "item-2", orderId: "order-10479", productId: "book-3", quantity: 1, unitPriceCents: 89900, fulfillmentType: "DIGITAL", includesEbook: true, bookFormat: "EBOOK" },
+      { id: "item-2", orderId: "order-10479", productId: "book-3", quantity: 1, unitPriceCents: 89900, fulfillmentType: "DIGITAL", includesEbook: true, bookFormat: "EBOOK", cancellationId: null },
     ],
   },
   {
@@ -86,10 +88,11 @@ export const SAMPLE_ORDERS: SampleOrder[] = [
     discountCode: null,
     trackingNumber: null,
     carrier: null,
+    deliveredAt: null,
     createdAt: day(21),
     updatedAt: day(2),
     items: [
-      { id: "item-3", orderId: "order-10465", productId: "service-standard", quantity: 1, unitPriceCents: 1790000, fulfillmentType: "SERVICE", includesEbook: false, bookFormat: null },
+      { id: "item-3", orderId: "order-10465", productId: "service-standard", quantity: 1, unitPriceCents: 1790000, fulfillmentType: "SERVICE", includesEbook: false, bookFormat: null, cancellationId: null },
     ],
   },
 ];

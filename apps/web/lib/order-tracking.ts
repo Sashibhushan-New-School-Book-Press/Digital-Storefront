@@ -16,7 +16,9 @@
  * can import it; the page builds `OrderDetail` on the server.
  */
 
-import type { FulfillmentType, OrderStatus, PaymentMethod, PaymentStatus, ShipmentStatus } from "@repo/database";
+import type { FulfillmentType, OrderStatus, PaymentMethod, PaymentStatus, ReturnStatus, ShipmentStatus } from "@repo/database";
+import type { LineBlock, OrderFacts } from "@repo/database/returns";
+import { formatINRWhole } from "./format";
 import type { OrderBillingAddress, OrderShippingAddress } from "./india-address";
 
 export interface OrderDetailItem {
@@ -32,6 +34,42 @@ export interface OrderDetailItem {
   includesEbook: boolean;
   quantity: number;
   unitPriceCents: number;
+  /** Cancelled by the customer. */
+  cancelled: boolean;
+  /** Units in a return that wasn't rejected. */
+  returnedQuantity: number;
+  /** Why "Cancel order" leaves this line alone, or null if it would go. */
+  cancelBlock: LineBlock | null;
+  /** Why it can't be returned right now, or null if it can. */
+  returnBlock: LineBlock | null;
+  /** How many copies could go back now. */
+  returnableQuantity: number;
+}
+
+/** A cancellation the customer made from My Orders. */
+export interface OrderCancellationDetail {
+  id: string;
+  createdAt: string;
+  reasonLabel: string;
+  note: string | null;
+  refundCents: number;
+  refundedAt: string | null;
+  itemIds: string[];
+}
+
+/** A return the customer asked for, and where staff have got to with it. */
+export interface OrderReturnDetail {
+  id: string;
+  status: ReturnStatus;
+  createdAt: string;
+  decidedAt: string | null;
+  completedAt: string | null;
+  reasonLabel: string;
+  note: string | null;
+  staffNote: string | null;
+  refundCents: number;
+  refundedAt: string | null;
+  items: { orderItemId: string; quantity: number }[];
 }
 
 /** Serializable (ISO dates) — it crosses from the Server Component to the dialog. */
@@ -62,6 +100,20 @@ export interface OrderDetail {
     updatedAt: string;
   } | null;
   items: OrderDetailItem[];
+  cancellations: OrderCancellationDetail[];
+  /** Oldest first. */
+  returns: OrderReturnDetail[];
+  /** "Cancel order" shows. */
+  canCancel: boolean;
+  /** What cancelling now would refund, and whether it ends the whole order. */
+  cancelRefundCents: number;
+  cancelsWholeOrder: boolean;
+  /** "Return order" shows. */
+  canReturn: boolean;
+  /** When returns close; null until the parcel is delivered. */
+  returnWindowEndsAt: string | null;
+  /** What the return form's live refund estimate is worked out from (`@repo/database/returns`). */
+  facts: OrderFacts;
 }
 
 export const ORDER_STATUS: Record<OrderStatus, { label: string; tone: "ok" | "tile" | "brand" }> = {
@@ -87,13 +139,33 @@ const SHIPMENT_STATUS: Record<ShipmentStatus, StatusBadge> = {
   CANCELLED: { label: "Cancelled", tone: "tile" },
 };
 
+const RETURN_STATUS: Record<ReturnStatus, StatusBadge> = {
+  REQUESTED: { label: "Return requested", tone: "tile" },
+  APPROVED: { label: "Return approved", tone: "brand" },
+  COMPLETED: { label: "Returned", tone: "tile" },
+  REJECTED: { label: "Return not accepted", tone: "tile" },
+};
+
 /**
  * The one status an order's row and dialog show: the order's own when it's
- * been called off, otherwise the parcel's when there is one (that's what a
- * customer waiting on a delivery wants to know), otherwise the order's.
+ * been called off, then a return that's under way or done, otherwise the
+ * parcel's when there is one (that's what a customer waiting on a delivery
+ * wants to know), otherwise the order's.
  */
-export function orderStatusBadge(order: Pick<OrderDetail, "status" | "shipmentStatus">): StatusBadge {
-  if (order.status === "CANCELLED" || order.status === "REFUNDED" || !order.shipmentStatus) return ORDER_STATUS[order.status];
+export function orderStatusBadge(
+  order: Pick<OrderDetail, "status" | "shipmentStatus"> & Partial<Pick<OrderDetail, "returns" | "items">>
+): StatusBadge {
+  if (order.status === "CANCELLED" || order.status === "REFUNDED") return ORDER_STATUS[order.status];
+  const latest = order.returns?.at(-1);
+  if (latest && latest.status !== "REJECTED") {
+    if (latest.status !== "COMPLETED") return RETURN_STATUS[latest.status];
+    // Everything that was delivered went back, or only some of it.
+    const kept = (order.items ?? []).some(
+      (item) => item.fulfillmentType !== "SERVICE" && !item.cancelled && item.returnedQuantity < item.quantity
+    );
+    return kept ? { label: "Partly returned", tone: "ok" } : RETURN_STATUS.COMPLETED;
+  }
+  if (!order.shipmentStatus) return ORDER_STATUS[order.status];
   return SHIPMENT_STATUS[order.shipmentStatus];
 }
 
@@ -206,17 +278,32 @@ export function buildTrackingTimeline(order: OrderDetail, standardEta: string): 
   if (order.status === "CANCELLED" || order.status === "REFUNDED" || parcelOnlyCancelled) {
     const kept: TrackingStep[] = [{ ...steps[0]!, state: "done", at: order.createdAt }];
     if (paidAt) kept.push({ ...steps[1]!, state: "done", at: paidAt });
+    // The customer called it off themselves, rather than staff refusing it.
+    const own = order.status === "REFUNDED" ? null : customerCancellation(order, parcelOnlyCancelled);
     kept.push({
       key: order.status === "REFUNDED" ? "refunded" : "cancelled",
-      label: order.status === "REFUNDED" ? "Order refunded" : "Order cancelled",
+      label:
+        order.status === "REFUNDED"
+          ? "Order refunded"
+          : parcelOnlyCancelled && own
+            ? "Printed items cancelled"
+            : "Order cancelled",
       description:
         order.status === "REFUNDED"
           ? "Your payment has been refunded to the original payment method. Banks usually take 5–7 working days to show it."
-          : parcelOnlyCancelled
-            ? "We couldn't send the printed items in this order, so they were cancelled and are refunded to your original payment method. Your e-books stay in your digital library."
-            : "This order was cancelled. If you paid online, the amount is refunded to your original payment method.",
+          : own
+            ? [
+                parcelOnlyCancelled ? "You cancelled the printed items in this order." : "You cancelled this order.",
+                cancellationRefundText(own.refundCents, own.refundedAt),
+                parcelOnlyCancelled ? "Your e-books stay in your digital library." : "",
+              ]
+                .filter(Boolean)
+                .join(" ")
+            : parcelOnlyCancelled
+              ? "We couldn't send the printed items in this order, so they were cancelled and are refunded to your original payment method. Your e-books stay in your digital library."
+              : "This order was cancelled. If you paid online, the amount is refunded to your original payment method.",
       state: "stopped",
-      at: order.updatedAt,
+      at: own?.createdAt ?? order.updatedAt,
     });
     return kept;
   }
@@ -225,7 +312,7 @@ export function buildTrackingTimeline(order: OrderDetail, standardEta: string): 
   // Reaching the last step means the order is complete, so it's ticked
   // rather than shown as still in progress.
   const complete = reachedIndex === steps.length - 1;
-  return steps.map((step, index) => {
+  const tracked = steps.map((step, index): TrackingStep => {
     const state: TrackingStepState =
       index < reachedIndex || (index === reachedIndex && complete)
         ? "done"
@@ -239,6 +326,89 @@ export function buildTrackingTimeline(order: OrderDetail, standardEta: string): 
     else if (index === reachedIndex) at = order.updatedAt;
     return { ...step, state, at };
   });
+  return [...tracked, ...returnSteps(order)];
+}
+
+/**
+ * The customer's own cancellation that stopped the order (with `parcel`,
+ * the one that called off its printed part) — null when staff refused it.
+ */
+function customerCancellation(order: OrderDetail, parcel: boolean): OrderCancellationDetail | null {
+  const printed = new Set(order.items.filter((item) => item.fulfillmentType === "SHIP").map((item) => item.id));
+  const relevant = parcel
+    ? order.cancellations.filter((cancellation) => cancellation.itemIds.some((id) => printed.has(id)))
+    : order.cancellations;
+  return relevant.at(-1) ?? null;
+}
+
+/** What a customer's cancellation refunds, in a sentence. */
+export function cancellationRefundText(refundCents: number, refundedAt: string | null): string {
+  if (refundCents <= 0) return "Nothing had been charged for it, so there's nothing to refund.";
+  const amount = formatINRWhole(refundCents);
+  return refundedAt
+    ? `${amount} was refunded to your original payment method on ${formatOrderDate(refundedAt)}.`
+    : `${amount} is being refunded to your original payment method — banks usually take 5–7 working days to show it.`;
+}
+
+/** What a completed return refunds, in a sentence. */
+export function returnRefundText(orderReturn: OrderReturnDetail, cashOnDelivery: boolean): string {
+  if (orderReturn.refundCents <= 0) return "We've received your return.";
+  const amount = formatINRWhole(orderReturn.refundCents);
+  if (orderReturn.refundedAt) return `We've received your return. ${amount} was refunded on ${formatOrderDate(orderReturn.refundedAt)}.`;
+  return cashOnDelivery
+    ? `We've received your return. ${amount} is being refunded by bank transfer or UPI — we'll contact you for the account to send it to.`
+    : `We've received your return. ${amount} is being refunded to your original payment method — banks usually take 5–7 working days to show it.`;
+}
+
+/** Where the latest return has got to, appended after "Delivered". */
+function returnSteps(order: OrderDetail): TrackingStep[] {
+  const latest = order.returns.at(-1);
+  if (!latest) return [];
+  const count = latest.items.reduce((sum, item) => sum + item.quantity, 0);
+  const steps: TrackingStep[] = [
+    {
+      key: "return_requested",
+      label: "Return requested",
+      description: `You asked to return ${count} item${count === 1 ? "" : "s"}: ${latest.reasonLabel.toLowerCase()}.`,
+      state: latest.status === "REQUESTED" ? "current" : "done",
+      at: latest.createdAt,
+    },
+  ];
+  if (latest.status === "REJECTED") {
+    steps.push({
+      key: "return_rejected",
+      label: "Return not accepted",
+      description: latest.staffNote || "We couldn't accept this return, so the items stay yours.",
+      state: "stopped",
+      at: latest.decidedAt,
+    });
+    return steps;
+  }
+  steps.push(
+    {
+      key: "return_approved",
+      label: "Return approved",
+      description:
+        latest.status === "REQUESTED"
+          ? "We'll let you know how to send it back. Keep printed items in their unopened packaging."
+          : latest.staffNote || "Send the items back in their unopened packaging, as we've emailed you.",
+      state: latest.status === "APPROVED" ? "current" : latest.status === "COMPLETED" ? "done" : "upcoming",
+      at: latest.decidedAt,
+    },
+    {
+      key: "returned",
+      label: "Returned",
+      description:
+        latest.status === "COMPLETED"
+          ? returnRefundText(latest, order.payment?.method === "COD")
+          : latest.refundCents > 0
+            ? `Once it reaches us and we've checked it, we refund ${formatINRWhole(latest.refundCents)}.`
+            : "Once it reaches us we'll confirm it by email.",
+      state: latest.status === "COMPLETED" ? "done" : "upcoming",
+      at: latest.completedAt,
+    }
+  );
+  return steps;
 }
 
 /** Which step a parcel's shipment status has reached. CANCELLED is handled before this is asked. */

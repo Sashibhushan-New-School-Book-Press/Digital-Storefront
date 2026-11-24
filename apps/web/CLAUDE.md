@@ -2,239 +2,225 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Scoped to `apps/web` — the public storefront and customer account area. See
-the root `CLAUDE.md` for monorepo-wide commands and shared-package
-architecture (auth, database, payments, jobs).
+Scoped to `apps/web`, the public storefront and customer account area. The
+root `CLAUDE.md` covers monorepo commands, shared packages and the rules
+every change must follow. `CONTEXT.md` defines the business terms used here.
 
 ## Commands
 
-Run from `apps/web`, or via `npm run <script> --workspace=web` from the repo root.
+Run from `apps/web`, or with `--workspace=web` from the repo root.
 
 ```bash
-npm run dev          # next dev --turbopack, port 3000
+npm run dev                # next dev --turbopack, port 3000
 npm run build
 npm run lint
 npm run typecheck
-npm run test               # Vitest: unit + contract tests
-npm run test:integration   # Vitest against TEST_DATABASE_URL (local Postgres)
-npm run test:e2e           # Playwright: everything in testing/e2e
-npm run test:smoke         # or test:sanity, test:security, test:a11y, test:visual, test:cross-browser
+npm run test               # Vitest: unit + contract
+npm run test:integration   # Vitest against TEST_DATABASE_URL
+npm run test:e2e           # Playwright (test:smoke, test:security, test:a11y, … for subsets)
 npm run test:perf          # Lighthouse budgets (builds, serves on :3100)
-npm run test:load          # autocannon load test — local build or staging only
+npm run test:load          # autocannon: a local build or the dev environment, never production
 ```
 
-Tests live in `testing/`; see `docs/testing.md` for every kind, the test
-database, test accounts and CI.
+Tests live in `testing/`; see `docs/testing.md`.
 
-## Architecture
+## Access and security
 
-**Audience: Guests, Readers, and Self-Publishing Authors.** Unlike
-`apps/admin`, this app is intentionally mostly public — `proxy.ts` runs on
-every page to set a per-request nonce CSP (`packages/security`), but only
-enforces sign-in on `/account/**` and `/self-publishing/wizard/**` (its
-`PROTECTED_PATHS`), with no role restriction beyond "signed in." The root
-layout passes the nonce (`x-nonce`) to next-themes' inline script; any new
-inline `<script>` must carry it too, and any new third-party script, iframe
-or API origin must be added to the CSP in `proxy.ts`.
+- **The app is mostly public.**
+  - `proxy.ts` sets a per-request nonce CSP on every page.
+  - It requires sign-in only on `/account/**` and
+    `/self-publishing/wizard/**` (`PROTECTED_PATHS`), with no role check.
+  - `app/(account)/layout.tsx` re-checks the user. `account/publishing`
+    also requires `SELF_PUB_AUTHOR`.
+- **Every inline `<script>` must carry the nonce** (the root layout passes
+  `x-nonce` to next-themes). Any new third-party script, iframe or API
+  origin must be added to the CSP in `proxy.ts`.
+- **Auth uses the storefront Supabase project.** This app never sets
+  `NEXT_PUBLIC_AUTH_SUPABASE_*`, so customer accounts can't reach admin.
+- **Account pages read real data only.** Nothing under `app/(account)`
+  uses sample data or `withFallback`.
 
-**Auth = the storefront Supabase project.** This app never sets
-`NEXT_PUBLIC_AUTH_SUPABASE_*`, so `packages/auth` falls back to
-`NEXT_PUBLIC_SUPABASE_*` and authenticates against the same project that
-holds the shared Postgres. `apps/admin` uses a separate auth project (root
-`CLAUDE.md`); customer accounts created here can't reach the back office. Role-
-specific areas (like the publishing dashboard) enforce their own check in
-the page/layout itself.
+## Layout
 
-**Route groups map directly to BRD modules:**
-- `app/(storefront)/` — public catalogue, product/service detail pages, the self-publishing landing page. No auth required.
-- `app/(account)/` — `layout.tsx` calls `getCurrentUser()` and redirects to `/sign-in` if absent (defense-in-depth behind middleware). `account/publishing/page.tsx` additionally requires `role === "SELF_PUB_AUTHOR"`.
-- `app/(checkout)/` — `cart` holds the lines and the "Checkout" section (billing details first: name on invoice/email pre-filled from the account, a saved-address picker, Address line 1/2, State · District · City, PIN, then the optional GSTIN on its own row; then a delivery address with a "same as billing" checkbox, unticked by default: ticking it mirrors the billing fields read-only, unticking blanks the delivery fields); the order snapshots both into `Order.shippingAddress` / `Order.billingAddress`. "Proceed to payment" stores those details in `lib/checkout-store.ts` (sessionStorage) and goes to `payment`, where the shopper picks Cash on Delivery / UPI / Net Banking / cards and places the order. `checkout` only `permanentRedirect`s to `cart`, so old links keep working.
-- `app/api/` — the Route Handlers that need a stable HTTP contract: `webhooks/razorpay` (payment source of truth), `library/[assetId]` (entitlement-checked digital delivery).
+**Route groups:**
+- `app/(storefront)/` is public: catalogue, product and service pages,
+  policy pages, the publishing landing pages.
+  - `educational-material/books` is the books listing and detail.
+  - The other three Educational Materials lines share `_shared/` and
+    `lib/product-lines.ts`.
+  - The Advocate's Diary, Naya Bandhu, Digital Tracking System, Indoor
+    Plants and Bulk Publishing pages are static and not backed by
+    products yet.
+- `app/(account)/` holds orders, library, wishlist, addresses and
+  publishing.
+- `app/(checkout)/` holds `cart`, then `payment`. `checkout` only redirects
+  to `cart`.
+- `app/api/` holds `webhooks/razorpay` (the payment source of truth),
+  `library/[assetId]` (entitlement-checked download), `books`
+  (catalogue paging) and `revalidate` (admin's cache-expiry ping).
 
-**Components are grouped by role, not by page:**
-- `components/layout/` — the chrome: promo marquee, utility bar, masthead, department bar with its hover mega-panels, mobile drawer, footer, theme toggle. The department bar's 5 departments/8 product lines come from `lib/navigation.ts`'s `buildDepartments()`, hardcoded to mirror `apps/admin/components/sidebar-nav.tsx`'s `FIXED_DEPARTMENTS` by hand rather than importing `PRODUCT_LINE_CATALOG` from `@repo/database` — see root `CLAUDE.md`'s "Product & service taxonomy" section for the canonical list, `Product.productLine`, and why the nav files don't read from it yet.
-- `components/commerce/` — anything that sells: the book jacket (four drawable faces), product tile, catalogue and product page bodies, buy box, cart screen.
-- `components/marketing/` — the repeating content blocks: hero, category circles, trust band, dark plan band, newsletter, FAQ.
-- `components/primitives/` — this storefront's style-only pieces (`Wrap`, `buttonClass`, `Callout`, `SectionHead`, table classes). Distinct from `@repo/ui`, which holds the *behavioural* primitives apps/admin shares.
-- `components/account/` — the signed-in area's navigation.
+**Components are grouped by role:**
+- `layout/`: the chrome. The department bar comes from
+  `lib/navigation.ts`'s `buildDepartments()`, a hand-kept copy of the
+  taxonomy (see root `CLAUDE.md`).
+- `commerce/`: anything that sells.
+- `marketing/`: repeating content blocks.
+- `account/`: the signed-in area.
+- `primitives/`: this storefront's presentational pieces. These are
+  separate from `@repo/ui`, which holds the behavioural primitives shared
+  with admin.
 
-**Design tokens live in `packages/config/tailwind-preset.css`, and there is
-only one set.** Geometry follows Vistaprint's "Swan" system (16px tile /
-8px button / pill radii, 700-weight display type on −0.03em tracking, a
-12px/700/+0.083em caps style); colour is sampled from `public/logo.svg`
-and `logo-dark.svg` (`#007ACC` brand, `#1D1C5E` ink, `#F4F7FB` page). The
-legacy semantic names (`background`, `foreground`, `card`, `border`, …)
-are re-pointed onto that palette so `packages/ui` and apps/admin keep
-working without a second system.
+**Design tokens** live in `packages/config/tailwind-preset.css`, the only
+set:
+- Geometry follows Vistaprint's "Swan" system: 16px tile / 8px button /
+  pill radii, 700-weight display type at −0.03em, a 12px/700/+0.083em caps
+  style.
+- Colour is sampled from `public/logo*.svg`: `#007ACC` brand, `#1D1C5E`
+  ink, `#F4F7FB` page.
+- The legacy semantic names (`background`, `card`, `border`, …) map onto
+  that palette.
 
-**Cart state lives in `lib/cart-store.ts`** — a Zustand store persisted to
-`localStorage` and stamped with the `ownerId` of the account it belongs to
-(`null` for a guest). `components/commerce/cart-sync.tsx`, mounted by the root
-layout with the signed-in `userId`, keeps it tied to the account: a signed-in
-customer's cart is loaded from and saved to the `carts` table
-(`getSavedCart`/`saveCart` in `lib/actions/cart.ts`), so it is the same on
-every browser and device; a guest cart is merged in on sign-in; and an
-account's cart (plus `checkout-store`'s delivery details) is emptied from the
-browser on sign-out or when a different account signs in. The saved lines are
-display state only — checkout re-prices every line. `WishlistProvider` takes
-the same `userId` and reloads on a change of account. `CartItem` carries `listPriceCents` and `taxType`
-alongside the net price so the cart can show bundle savings and per-line
-GST.
+## Content and caching
 
-**`lib/pricing.ts` holds three mechanics the schema doesn't cover yet** —
-class-set quantity tiers, the print + e-book bundle, and per-line GST
-(printed books nil-rated) — derived from the printed price, which is why
-they live in one module: it's the single place to delete from once
-`Product` carries real pricing.
+- **No homepage string is hardcoded.**
+  - The layout, header and footer read `SiteSettings` and `NavLink`.
+  - `app/page.tsx` reads `Banner` (the first active one is the hero),
+    `Testimonial`, `Faq`, `getPricingConfig()` and `getContent()`.
+  - Everything else is edited from admin.
+  - `getContent()` never returns a blank: it merges overrides onto the
+    defaults in `content.ts`, and its keys are a typed union.
+  - Components that show this copy (`Hero`, `TrustBand`, `Newsletter`,
+    `PlanBand`) take it as props.
+- **CMS reads** go through a `lib/cms.ts` reader, never Prisma directly.
+  - Each reader is tagged `cms` plus its section.
+  - Rows are returned without timestamps, because the cache round-trips
+    JSON.
+  - Content and pricing load with the throwing `loadContent` /
+    `loadPricingConfig` inside the cache, so an error is never cached.
+- **Catalogue reads** go through `lib/products-cache.ts`. That covers
+  listings (`lib/books-data.ts`), detail pages, related rows, homepage rows,
+  `/services` and cart covers.
+  - Listings carry `catalogue:<line>`, and a single product also carries
+    `product:<slug>`.
+  - Products Menu `[slug]` pages use `cms:menu`.
+- **Expiry.**
+  - Admin expires what it saved via `api/revalidate` (bearer
+    `STOREFRONT_REVALIDATE_SECRET`), and writes Redis directly when
+    `CACHE_STORE=redis`.
+  - Checkout expires only the product pages whose stock moved
+    (`lib/stock.ts`). It re-lists a title only when its tile changes: low
+    stock, sold out, or no longer same-day.
+  - The 5-minute TTL is a backstop.
+- **`CACHE_STORE=redis` at build time** makes `next.config.ts` swap in
+  `cache-handler.mjs`, which keeps the data cache in Upstash.
+  - The handler is plain JS that can't import workspace code.
+  - `testing/unit/cache-handler.test.ts` keeps its key scheme in step with
+    `@repo/cache/keys`.
+- **Never price a charge from cached data.** Checkout and the cart call
+  `getPricingConfig()` live and re-read each `Product`.
+- **HTTP and browser caching.**
+  - `/api/books`: 60 s shared, 240 s stale, with an ETag.
+  - `public/` images: one hour.
+  - TanStack Query (`components/layout/query-provider.tsx`) keeps the
+    catalogue scroll pages and cart covers. Cart stock is never treated as
+    fresh.
+  - Covers go through `/_next/image`.
+  - Each process logs `cache.stats` once a minute; `CACHE_DEBUG=1` logs
+    every miss.
+- **SEO.** Per-product fields (`metaTitle`, `metaDescription`,
+  `ogImageUrl`) render through `generateMetadata` on the product detail
+  pages. `app/sitemap.ts` and `app/robots.ts` index only the production
+  deployment (`DEPLOY_ENV`/`VERCEL_ENV`).
 
-It holds the *arithmetic only*. The numbers (delivery threshold and fees,
-bundle uplift, GST rates, tiers) are admin-managed rows,
-read with `getPricingConfig()` from `@repo/database`. Every function here
-takes that config as an argument rather than importing it, because
-`buy-box.tsx`, `cart-screen.tsx` and `promo-bar.tsx` need the numbers but
-two of them are Client Components — a Server Component loads the config
-once and passes it down as a prop, so Prisma never reaches the browser
-bundle. If you add a pricing rule, put the number in
-`packages/database/src/pricing.ts` (with a default equal to current
-behaviour) and the maths here.
+## Cart, pricing, checkout
 
-**`lib/sample-data/`** is split by concern (`books`, `services`, `cms`,
-`account`, `shared`) and re-exported from `index.ts`; import from
-`@/lib/sample-data`.
+- **Cart** is `lib/cart-store.ts`, a Zustand store in `localStorage`
+  stamped with its owner's id.
+  - `components/commerce/cart-sync.tsx` saves a signed-in customer's cart
+    to the `carts` table (`lib/actions/cart.ts`), so it's the same on every
+    device.
+  - A guest cart is merged in on sign-in.
+  - The browser copy is cleared on sign-out or when another account signs
+    in.
+  - Saved lines are display state only; checkout re-prices everything.
+- **`lib/pricing.ts`** is the pricing arithmetic: class-set tiers, the
+  print + e-book bundle, per-line GST (printed books are nil-rated) and
+  delivery.
+  - The numbers come from `getPricingConfig()`, passed in as an argument,
+    so Client Components never import Prisma.
+  - A new rule gets its number in `packages/database/src/pricing.ts` (with
+    a default equal to today's behaviour) and its maths here.
+- **Cart page.** The billing details come first: a saved-address picker,
+  address, State · District · City (`lib/india-address.ts`), PIN and an
+  optional GSTIN. Then the delivery address, with a "same as billing" box
+  that's unticked by default.
+  - Both addresses are snapshotted onto the `Order`.
+  - "Proceed to payment" stores them in `lib/checkout-store.ts`
+    (sessionStorage).
+- **`app/(checkout)/actions.ts`.** Both payment paths share `prepareOrder`.
+  - It validates with zod: at most 50 lines, quantity 1–100, a known state.
+  - It refuses unpublished, out-of-stock and wrong-format lines.
+  - It re-derives every price from the database and sets
+    `OrderItem.includesEbook`.
+  - It re-checks the discount code (`lib/discounts.ts`) and records
+    `discountCents`/`discountCode`.
+  - Delivery is always standard.
+- **`placeCodOrder`** (cash on delivery):
+  - It's the only method when Razorpay isn't configured.
+  - It creates the order as `PROCESSING` with shipment `AWAITING_APPROVAL`
+    and a `COD` payment.
+  - It emails from `after()`.
+  - It refuses e-book and service lines, because `PROCESSING` grants an
+    entitlement.
+- **`startCheckout` → Razorpay Checkout → `confirmCheckout`** (UPI, net
+  banking, cards):
+  - `startCheckout` requires sign-in and is rate-limited.
+  - `confirmCheckout` verifies the signature **and** that the Razorpay order
+    id is the one stored on this order's `Payment`. It then fetches the
+    payment to check the amount, currency and capture.
+  - It settles through `settleOrderPayment()`, the same function the
+    webhook uses. That function is idempotent: a conditional `PENDING →
+    PAID` update, so the email fires once.
+  - The webhook stays authoritative and also checks the amount.
+- **Discount codes** never reach the browser.
+  - `checkCoupon` returns only a code's terms.
+  - Client Components import the maths from `@repo/database/discounts`,
+    never the package root.
+- **Sign-in is required** for "Buy now", the cart's "Proceed to payment",
+  and `/payment` itself.
 
-**No user-visible string on the homepage is hardcoded — all of it is
-admin-controlled.** `app/layout.tsx`'s `generateMetadata` and
-`components/layout/site-header.tsx`/`site-footer.tsx` read the singleton
-`SiteSettings` row (via `@repo/database`'s `getSiteSettings()`) and
-`NavLink` rows. `app/page.tsx` reads `Banner` (the first active row *is*
-the hero, including its eyebrow and both buttons), `Testimonial`, `Faq`,
-`getPricingConfig()` for the class-set table, and `getContent()` for
-everything else — every section heading, standfirst, promise, button label
-and piece of small print. All of it is edited from `apps/admin`
-(`settings/site`, `settings/navigation`, `settings/pricing`,
-`content/banners`, `content/homepage`, `content/faqs`,
-`content/testimonials`); there's no API call to admin, just the same
-shared Postgres.
+## After the order
 
-**CMS data and catalogue reads are cached** (design:
-`docs/adr/0001-caching-strategy.md`). Every page renders on request, and
-the database is a pooler round trip away, so public data is cached at the
-data level through `cachedQuery()` (`@repo/cache/query`).
+- **Library and downloads.**
+  - `entitledAssetsWhere()` / `ownsEbook()` (`lib/library.ts`) define
+    entitlement. Cancelled lines and lines in an open return are excluded.
+  - `api/library/[assetId]` checks entitlement, then claims one download
+    in `LibraryDownload` (per customer, per file).
+  - It then redirects to a ~5-minute signed URL from
+    `createEbookDownloadUrl()`. A legacy `https` `blobPath` is redirected
+    as-is, and any other scheme is refused.
+  - Downloads need `SUPABASE_SERVICE_ROLE_KEY` and the private `ebooks`
+    bucket.
+- **My Orders.** `account/orders/page.tsx` works out on the server what each
+  order allows. It uses `@repo/database/returns` against the order, the
+  customer's downloads and the admin-set return window.
+  - `components/account/order-changes.tsx` holds the Cancel and Return
+    forms, which replace the dialog body.
+  - `cancelOrder` and `requestReturn` (`account/orders/actions.ts`) re-check
+    everything against the live order. They're owner-only, rate-limited and
+    zod-validated.
+  - Each write is conditional on the status that was read, and downloads
+    are re-checked inside the transaction.
+  - Cancelling returns stock (`expireReturnedStock`). Both actions email
+    from `after()`.
+- **Order tracking** on My Orders uses `lib/order-tracking.ts`. There's no
+  status-history table, so it rebuilds the timeline from the current
+  status, `updatedAt`, the payment, and the carrier and tracking number
+  staff entered.
 
-**CMS.** Every CMS read the chrome and homepage make goes through a
-`lib/cms.ts` reader. Each carries `cms` plus its section's tag
-(`cms:faqs`, `cms:menu`, …), and returns rows without
-`createdAt`/`updatedAt`, because the cache round-trips through JSON.
-- Read new CMS data through a `lib/cms.ts` reader, not Prisma directly.
-- Content and pricing are loaded with the throwing
-  `loadContent`/`loadPricingConfig` inside the cache, so a database error
-  is never cached.
-- Never price a charge from `getCachedPricingConfig()`: checkout actions
-  and the cart call `getPricingConfig()` live.
+## Sample data
 
-**Catalogue.** Listings (`lib/books-data.ts`, keyed on
-`canonicalBookQuery`), detail pages, related rows, the homepage's book
-rows, `/services`, `/services/[slug]` and cart covers all go through
-`lib/products-cache.ts`. Listings carry `catalogue:<line>`; a single
-product also carries `product:<slug>`. The Products Menu `[slug]` pages
-use `cms:menu`.
-
-**Expiry.**
-- apps/admin expires exactly what it saved, via `app/api/revalidate` (a
-  `{ tags, productIds }` body; bearer `STOREFRONT_REVALIDATE_SECRET`) and,
-  with `CACHE_STORE=redis`, by writing Redis directly.
-- Checkout expires only the product pages whose stock moved
-  (`lib/stock.ts`). It re-lists a title only when its tile would change:
-  low stock, sold out, or no longer same-day.
-- `TTL` (5 min, `@repo/cache/policy`) is the backstop.
-
-**With `CACHE_STORE=redis` at build time,** `next.config.ts` swaps in
-`cache-handler.mjs`, which keeps the data cache in Upstash Redis, shared
-across processes and restarts. The handler is plain JS loaded by Next
-outside the bundler, so it can't import workspace code;
-`testing/unit/cache-handler.test.ts` keeps its key scheme in step with
-`@repo/cache/keys`.
-
-**Never cached.** Anything per-user stays uncached, and checkout re-reads
-each `Product` live, so a cached price or stock figure never reaches a
-charge.
-
-**HTTP and client caching.**
-- `/api/books` is publicly cacheable: 60 s shared, 240 s stale, with an
-  ETag.
-- `public/` images and logos are cached for an hour.
-- In the browser, `components/layout/query-provider.tsx` (TanStack Query)
-  keeps `BooksGrid`'s scroll pages and the cart's covers. Cart stock is
-  never treated as fresh.
-- Covers are served through the built-in `/_next/image` optimizer
-  (resized WebP, cached a month); the originals are full-size scans.
-- Each process logs a `cache.stats` line a minute; `CACHE_DEBUG=1` logs
-  every miss. Per-product SEO
-metadata (`Product.metaTitle`/`metaDescription`/`ogImageUrl`, editable from
-the admin catalogue form) is rendered via `generateMetadata` on each of
-`books/[slug]`, `ebooks/[slug]`, and `services/[slug]`.
-
-**`getContent()` cannot return a blank string.** It merges stored
-`ContentBlock` overrides onto the defaults declared in
-`packages/database/src/content.ts`, and treats a blank override as "not
-set". So `content["homepage.faq.title"]` is always safe to render
-directly, and the key is a typed union — a typo won't compile. Components
-that show this copy (`TrustBand`, `Newsletter`, `PlanBand`, `Hero`) take
-it as props rather than reaching for it themselves, which keeps them
-usable from `catalog/[slug]` too.
-
-**`app/api/library/[assetId]/route.ts`** checks purchase entitlement with
-the shared `entitledAssetsWhere()` (`lib/library.ts`: a scanned-`CLEAN`
-`EBOOK_FILE` reached through an `OrderItem` with `includesEbook` on a paid-
-or-later order owned by the caller — buying only the print edition does
-*not* unlock the PDF), then atomically claims one of the caller's
-downloads in `LibraryDownload` (per customer, per file — `maxDownloads` is
-a per-customer allowance), then redirects to the file. For an e-book uploaded from `apps/admin` the stored
-`blobPath` is a **private** Supabase Storage path, so the route mints a
-~5-minute signed URL via `createEbookDownloadUrl()` (`@repo/storage`); a
-legacy/seed row whose `blobPath` is already an `https` URL is redirected
-as-is (any other scheme is refused). Needs `SUPABASE_SERVICE_ROLE_KEY` (server-only) + a private `ebooks`
-bucket.
-
-**Checkout is wired: `app/(checkout)/actions.ts`.** Both payment paths share
-`prepareOrder`, which validates the cart and delivery details with zod (at
-most 50 lines, quantity 1–100; state must be one of the 36 in
-`lib/india-address.ts`), refuses unpublished, out-of-stock and wrong-format
-lines, re-derives every line price from `Product` (never trusts the client
-cart), sets `OrderItem.includesEbook`, and snapshots the delivery address
-into `Order.shippingAddress` (a saved `Address` can change later). Delivery
-is always standard — checkout no longer offers a speed.
-`placeCodOrder` (Cash on Delivery, the only method live until Razorpay is
-configured) creates the `Order` as `PROCESSING` (with `shipmentStatus`
-`AWAITING_APPROVAL` — staff accept or deny it from apps/admin's Sales
-Orders page) with a `Payment` of method `COD`, status `CREATED`, and sends the confirmation email in `after()`, once the
-response has gone (best-effort, never retried); it refuses any cart
-with an e-book or service line, because `PROCESSING` is an entitling status
-in `lib/library.ts`. `startCheckout` (UPI / net banking / cards) requires a
-signed-in user, is rate-limited, creates the `Order` + `Payment` and a real
-Razorpay order; `payment-screen.tsx` opens Razorpay Checkout with it.
-`confirmCheckout` verifies the returned signature **and** that the Razorpay
-order id is the one stored on *this* order's `Payment` (a signature alone
-only proves some payment happened — without this one receipt could settle
-any order), fetches the payment from Razorpay to check amount, currency and
-captured status, then settles through `settleOrderPayment()`
-(`lib/orders.ts`) — the same function the webhook uses. That does a
-conditional `PENDING → PAID` update (so it's **idempotent** and the email
-fires once), and sets `shipmentStatus` `AWAITING_APPROVAL` if anything in the
-order ships; it relies on `Payment.gatewayPaymentId` being unique. The
-webhook (`api/webhooks/razorpay`) remains the authoritative status source and
-also cross-checks amount and currency. Discount codes are looked up one at a time
-on the server (`lib/discounts.ts`, rules in `@repo/database`'s
-`discounts.ts`): `checkCoupon` validates a code for the cart and returns only
-its terms, and `prepareOrder` re-checks every rule (on/off, dates, total and
-per-customer uses, minimum order) and records `Order.discountCents` /
-`discountCode`. The code list is not part of `PricingConfig` and must never
-reach the browser; Client Components import the shared maths from
-`@repo/database/discounts`, never the package root. Sign-in is also
-gated client-side on "Buy now" (`buy-box.tsx`) and the cart's "Proceed to
-payment", and server-side on `/payment` itself.
-
-**Account pages read real data only** — no `withFallback`/sample data under
-`app/(account)/`: a customer sees their own orders, library and projects, or
-nothing. `account/library/page.tsx` uses the same `entitledAssetsWhere()` as
-the download route and shows the caller's own remaining downloads.
+`lib/sample-data/` (`books`, `services`, `cms`, `account`, `shared`,
+re-exported from `index.ts`) is the fallback that `withFallback()` uses
+when the database can't be reached. Import it from `@/lib/sample-data`. It
+must never back account pages.

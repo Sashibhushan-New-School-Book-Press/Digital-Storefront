@@ -1,8 +1,9 @@
 "use client";
 
 import { useId, useRef, useState } from "react";
-import { HTTPS_URL_MESSAGE, isHttpsUrl } from "@repo/security/href";
+import { HTTPS_URL_MESSAGE } from "@repo/security/href";
 import { cn } from "@repo/ui/utils";
+import { previewSrc } from "@/lib/image-preview";
 import { controlClass } from "./ui";
 
 /**
@@ -78,14 +79,9 @@ export function ImageField({
   const previewBox =
     shape === "cover" ? "h-40 w-[6.75rem]" : shape === "square" ? "h-32 w-32" : "h-28 w-full max-w-xs";
 
-  // Only an https:// address reaches the preview's `src` — the same rule the
-  // save applies (`httpsUrl()` in lib/schema-fields.ts) — so a typed
-  // `javascript:`/`data:` link is never handed to the DOM. The inline
-  // startsWith is the guard CodeQL's js/xss-through-dom recognises (it
-  // can't see inside isHttpsUrl); isHttpsUrl then checks it really parses.
-  const typed = url.trim();
-  const previewUrl = typed.startsWith("https://") && isHttpsUrl(typed) ? typed : null;
-  const linkInvalid = typed !== "" && !previewUrl;
+  // Only an https:// address is previewed, and encoded first (lib/image-preview.ts).
+  const previewUrl = previewSrc(url);
+  const linkInvalid = url.trim() !== "" && !previewUrl;
 
   return (
     <div>

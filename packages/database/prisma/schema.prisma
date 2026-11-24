@@ -160,6 +160,22 @@ enum NavLocation {
   FOOTER
 }
 
+/// Where a customer's return of delivered items is. Requested from My Orders,
+/// decided by staff on apps/admin's Sales Orders page:
+///
+///   REQUESTED → APPROVED → COMPLETED   (printed copies came back unopened)
+///       └─────────┴──────→ REJECTED    (packaging opened, outside the window, …)
+///
+/// A return of nothing but an undownloaded e-book has nothing to post back,
+/// so staff approve it straight to COMPLETED. The rules live in
+/// packages/database/src/returns.ts.
+enum ReturnStatus {
+  REQUESTED
+  APPROVED
+  COMPLETED
+  REJECTED
+}
+
 enum PurchaseOrderStatus {
   DRAFT
   SENT
@@ -222,7 +238,9 @@ model Wishlist {
   createdAt DateTime @default(now())
 
   @@unique([userId, productId])
-  @@index([userId])
+  // The wishlist page: one customer's saves, newest first. (The unique
+  // above already covers lookups by userId alone.)
+  @@index([userId, createdAt])
   @@map("wishlists")
 }
 
@@ -333,12 +351,19 @@ model Product {
   wishlists   Wishlist[]
 
   @@index([type])
-  @@index([slug])
-  @@index([productLine])
   @@index([genre])
-  @@index([ratingAvg])
-  @@index([reviewCount])
   @@index([inventoryStatus])
+  // One per listing sort (apps/web/lib/books-data.ts): `WHERE productLine = ?
+  // AND <sort col> >= <cursor> ORDER BY <sort col>, id LIMIT 21` is a range
+  // seek plus 21 rows, however deep the reader has scrolled. `createdAt` also
+  // serves the admin lists and the "related"/homepage rows. Every listing
+  // filters on productLine, so these replace a lone productLine index.
+  @@index([productLine, priceCents, id])
+  @@index([productLine, title, id])
+  @@index([productLine, publishedAt, id])
+  @@index([productLine, createdAt, id])
+  @@index([productLine, ratingAvg, id])
+  @@index([productLine, reviewCount, id])
   @@map("products")
 }
 
@@ -405,14 +430,23 @@ model Order {
 
   trackingNumber String?
   carrier        String?
+  /// When staff marked the parcel delivered. The customer's return window
+  /// (Homepage text → Policies, `policies.returnWindowDays`) counts from here.
+  deliveredAt    DateTime?
 
   items          OrderItem[]
   payment        Payment?
+  cancellations  OrderCancellation[]
+  returns        OrderReturn[]
 
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  @@index([userId])
+  // My Orders: one customer's orders, newest first.
+  @@index([userId, createdAt])
+  // Sales Orders and the dashboard's recent orders (newest first, LIMIT),
+  // and the period/week revenue aggregates (a createdAt range).
+  @@index([createdAt])
   @@index([status])
   @@index([shipmentStatus])
   @@index([discountCodeId])
@@ -438,10 +472,94 @@ model OrderItem {
   /// Stored as the format rather than a BookEdition id so an order line
   /// outlives the admin dropping that format from the title later.
   bookFormat      BookFormat?
+  /// Set when the customer cancelled this line from My Orders — always the
+  /// whole line. A cancelled line's copies are back in stock and it no
+  /// longer entitles its e-book (apps/web/lib/library.ts).
+  cancellationId  String?
+  cancellation    OrderCancellation? @relation(fields: [cancellationId], references: [id], onDelete: SetNull)
+  returnItems     OrderReturnItem[]
 
   @@index([orderId])
   @@index([productId])
+  @@index([cancellationId])
   @@map("order_items")
+}
+
+/// A customer calling off what was left of an order before it reached them,
+/// from My Orders: every printed line whose parcel hadn't shipped and every
+/// e-book line not yet downloaded, all at once. Instant — staff see it on
+/// the Sales Orders page but don't approve it. The lines it covers point
+/// back at it (`OrderItem.cancellationId`). A sales order *denied* by staff
+/// is not one of these: that's `Order.shipmentStatus` CANCELLED with no
+/// cancellation row. Rules: packages/database/src/returns.ts.
+model OrderCancellation {
+  id          String      @id @default(cuid())
+  orderId     String
+  order       Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// A `CANCEL_REASONS` key (src/returns.ts) — text, so a new reason needs no migration.
+  reason      String
+  note        String?
+  /// What the customer gets back. 0 when nothing had been paid yet (cash on delivery).
+  refundCents Int         @default(0)
+  /// Staff recorded the refund as sent (there's no refund integration — they
+  /// refund from the Razorpay dashboard and tick it off here).
+  refundedAt  DateTime?
+  createdAt   DateTime    @default(now())
+
+  items       OrderItem[]
+
+  @@index([orderId])
+  @@map("order_cancellations")
+}
+
+/// A customer sending delivered items back, requested from My Orders within
+/// the return window and decided by staff (see ReturnStatus). Printed copies
+/// only with their packaging unopened, which the customer confirms and
+/// staff check on arrival; an e-book only if it was never downloaded.
+model OrderReturn {
+  id                String            @id @default(cuid())
+  orderId           String
+  order             Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status            ReturnStatus      @default(REQUESTED)
+  /// A `RETURN_REASONS` key (src/returns.ts).
+  reason            String
+  /// The customer's own words.
+  note              String?
+  /// The customer confirmed the printed items are still in unopened packaging.
+  packagingUnopened Boolean           @default(false)
+  /// What staff told the customer: pickup arrangements on approval, the
+  /// reason on a rejection. Shown on My Orders.
+  staffNote         String?
+  /// Worked out when the return is requested (src/returns.ts) and owed once
+  /// it's COMPLETED.
+  refundCents       Int               @default(0)
+  refundedAt        DateTime?
+  /// When staff approved or rejected it.
+  decidedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  items             OrderReturnItem[]
+
+  @@index([orderId])
+  @@index([status])
+  @@map("order_returns")
+}
+
+/// How many units of one order line a return sends back. A line that
+/// carries an e-book always goes back whole.
+model OrderReturnItem {
+  id          String      @id @default(cuid())
+  returnId    String
+  orderReturn OrderReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  orderItemId String
+  orderItem   OrderItem   @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  quantity    Int
+
+  @@unique([returnId, orderItemId])
+  @@index([orderItemId])
+  @@map("order_return_items")
 }
 
 model SelfPublishingProject {
@@ -669,8 +787,9 @@ model StaffInvite {
 // ────────────────────────────────────────────────────────────
 // Procurement: vendors the Press buys stock from, and the purchase
 // orders raised against them. apps/admin-only — no apps/web reads.
-// Receiving a PO writes straight to Product.stockQty (no
-// StockMovement ledger exists yet — see docs/inventory-management-design.md).
+// Receiving a PO adds straight to the stock count (the book edition's for a
+// book, Product.stockQty otherwise). There is no stock-movement ledger;
+// AuditLog records who received what.
 // ────────────────────────────────────────────────────────────
 
 /// A supplier the Press orders physical stock (reprints) from.

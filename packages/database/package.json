@@ -9,6 +9,7 @@
     ".": "./src/client.ts",
     "./discounts": "./src/discounts.ts",
     "./shipment": "./src/shipment.ts",
+    "./returns": "./src/returns.ts",
     "./testing": "./testing/test-db.ts"
   },
   "scripts": {

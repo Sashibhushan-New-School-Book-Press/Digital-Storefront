@@ -1,7 +1,9 @@
 import "server-only";
 import { Resend } from "resend";
 import { OrderConfirmation } from "./templates/OrderConfirmation";
+import { OrderCancelled } from "./templates/OrderCancelled";
 import { OrderShipped } from "./templates/OrderShipped";
+import { ReturnUpdate, type ReturnUpdateStage } from "./templates/ReturnUpdate";
 import { ProjectStatusChanged } from "./templates/ProjectStatusChanged";
 import { StaffInvite } from "./templates/StaffInvite";
 
@@ -59,6 +61,47 @@ export async function sendOrderShipped(params: {
   });
 }
 
+export async function sendOrderCancelled(params: {
+  to: string;
+  orderRef: string;
+  items: string[];
+  partial: boolean;
+  refundCents: number;
+  ordersUrl?: string;
+}) {
+  return getResendClient().emails.send({
+    from: FROM,
+    to: params.to,
+    subject: `${params.partial ? "Items cancelled from" : "Cancelled:"} order ${subjectPart(params.orderRef, 40)}`,
+    react: OrderCancelled(params),
+  });
+}
+
+const RETURN_SUBJECT: Record<ReturnUpdateStage, string> = {
+  requested: "Return requested for order",
+  approved: "Return approved for order",
+  rejected: "Return not accepted for order",
+  completed: "Return complete for order",
+};
+
+export async function sendReturnUpdate(params: {
+  to: string;
+  stage: ReturnUpdateStage;
+  orderRef: string;
+  items: string[];
+  refundCents: number;
+  cashOnDelivery: boolean;
+  staffNote?: string | null;
+  ordersUrl?: string;
+}) {
+  return getResendClient().emails.send({
+    from: FROM,
+    to: params.to,
+    subject: `${RETURN_SUBJECT[params.stage]} ${subjectPart(params.orderRef, 40)}`,
+    react: ReturnUpdate(params),
+  });
+}
+
 export async function sendProjectStatusChanged(params: { to: string; bookTitle: string; status: string }) {
   return getResendClient().emails.send({
     from: FROM,
@@ -84,3 +127,4 @@ export async function sendStaffInvite(params: {
 }
 
 export { getResendClient };
+export type { ReturnUpdateStage };

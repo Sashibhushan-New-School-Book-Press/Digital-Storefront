@@ -1,13 +1,30 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { getCurrentUser } from "@repo/auth/server";
-import { bookFormatLabel, prisma, type Prisma } from "@repo/database";
+import {
+  bookFormatLabel,
+  canCancel,
+  canReturn,
+  cancelBlock,
+  cancelReasonLabel,
+  downloadedEbooksOf,
+  planCancellation,
+  prisma,
+  returnBlock,
+  returnReasonLabel,
+  returnWindowEndsAt,
+  returnableQuantity,
+  toOrderFacts,
+  type Prisma,
+} from "@repo/database";
 import { isHttpsUrl } from "@repo/security/href";
 import { OrdersTable } from "@/components/account/orders-table";
 import { SectionHead, buttonClass } from "@/components/primitives";
 import { getCachedPricingConfig } from "@/lib/cms";
 import type { OrderShippingAddress } from "@/lib/india-address";
+import { ORDER_CHANGES_INCLUDE } from "@/lib/order-changes";
 import type { OrderDetail } from "@/lib/order-tracking";
+import { getPolicyDetails } from "@/lib/policies";
 import { lineProductHref } from "@/lib/product-lines";
 
 export const metadata: Metadata = { title: "Orders" };
@@ -15,7 +32,9 @@ export const metadata: Metadata = { title: "Orders" };
 // FR-5.2/FR-8.3: order history with status tracking. Each row opens a
 // detail pop-up (components/account/order-detail-dialog.tsx); everything
 // it shows is loaded here in the one query, since a customer's history is
-// small and it saves a round trip per click.
+// small and it saves a round trip per click. That includes whether each
+// order can still be cancelled or returned (`@repo/database`'s returns.ts),
+// worked out here against the clock so the browser never decides it.
 const ORDER_INCLUDE = {
   items: {
     include: {
@@ -25,6 +44,7 @@ const ORDER_INCLUDE = {
     },
   },
   payment: { select: { method: true, status: true, updatedAt: true } },
+  ...ORDER_CHANGES_INCLUDE,
 } satisfies Prisma.OrderInclude;
 
 type OrderRow = Prisma.OrderGetPayload<{ include: typeof ORDER_INCLUDE }>;
@@ -34,7 +54,12 @@ export default async function OrderHistoryPage({
 }: {
   searchParams: Promise<{ placed?: string | string[] }>;
 }) {
-  const [user, { placed }, pricing] = await Promise.all([getCurrentUser(), searchParams, getCachedPricingConfig()]);
+  const [user, { placed }, pricing, policy] = await Promise.all([
+    getCurrentUser(),
+    searchParams,
+    getCachedPricingConfig(),
+    getPolicyDetails(),
+  ]);
   // Real data only — never sample rows: a customer must see their own
   // orders or none, not someone else's (fake) history.
   const rows = user
@@ -44,7 +69,17 @@ export default async function OrderHistoryPage({
         include: ORDER_INCLUDE,
       })
     : [];
-  const orders = rows.map(toOrderDetail);
+  // Whether an e-book can still be cancelled or returned turns on whether
+  // it's been downloaded.
+  const downloaded = user
+    ? await downloadedEbooksOf(
+        prisma,
+        user.id,
+        rows.flatMap((row) => row.items.filter((item) => item.includesEbook).map((item) => item.productId))
+      )
+    : new Set<string>();
+  const now = new Date();
+  const orders = rows.map((row) => toOrderDetail(row, downloaded, now, policy.returnWindowDays));
   // Set by the payment page after a cash-on-delivery order; only ever
   // matched against this customer's own orders.
   const justPlacedId = typeof placed === "string" ? placed : undefined;
@@ -70,7 +105,11 @@ export default async function OrderHistoryPage({
   );
 }
 
-function toOrderDetail(order: OrderRow): OrderDetail {
+function toOrderDetail(order: OrderRow, downloaded: ReadonlySet<string>, now: Date, windowDays: number): OrderDetail {
+  const facts = toOrderFacts(order, downloaded);
+  const factsById = new Map(facts.items.map((line) => [line.id, line]));
+  const plan = planCancellation(facts);
+  const windowEnds = returnWindowEndsAt(facts, windowDays);
   return {
     id: order.id,
     ref: `#${order.id.slice(-5)}`,
@@ -94,6 +133,7 @@ function toOrderDetail(order: OrderRow): OrderDetail {
       : null,
     items: order.items.map((item) => {
       const { product } = item;
+      const line = factsById.get(item.id)!;
       const format = item.bookFormat ? bookFormatLabel(item.bookFormat) : null;
       return {
         id: item.id,
@@ -113,8 +153,41 @@ function toOrderDetail(order: OrderRow): OrderDetail {
         includesEbook: item.includesEbook,
         quantity: item.quantity,
         unitPriceCents: item.unitPriceCents,
+        cancelled: line.cancelled,
+        returnedQuantity: line.returnedQuantity,
+        cancelBlock: cancelBlock(facts, line),
+        returnBlock: returnBlock(facts, line, now, windowDays),
+        returnableQuantity: returnableQuantity(line),
       };
     }),
+    cancellations: order.cancellations.map((cancellation) => ({
+      id: cancellation.id,
+      createdAt: cancellation.createdAt.toISOString(),
+      reasonLabel: cancelReasonLabel(cancellation.reason),
+      note: cancellation.note,
+      refundCents: cancellation.refundCents,
+      refundedAt: cancellation.refundedAt?.toISOString() ?? null,
+      itemIds: cancellation.items.map((item) => item.id),
+    })),
+    returns: order.returns.map((orderReturn) => ({
+      id: orderReturn.id,
+      status: orderReturn.status,
+      createdAt: orderReturn.createdAt.toISOString(),
+      decidedAt: orderReturn.decidedAt?.toISOString() ?? null,
+      completedAt: orderReturn.completedAt?.toISOString() ?? null,
+      reasonLabel: returnReasonLabel(orderReturn.reason),
+      note: orderReturn.note,
+      staffNote: orderReturn.staffNote,
+      refundCents: orderReturn.refundCents,
+      refundedAt: orderReturn.refundedAt?.toISOString() ?? null,
+      items: orderReturn.items.map(({ orderItemId, quantity }) => ({ orderItemId, quantity })),
+    })),
+    canCancel: canCancel(facts),
+    cancelRefundCents: plan?.refundCents ?? 0,
+    cancelsWholeOrder: plan?.cancelsOrder ?? false,
+    canReturn: canReturn(facts, now, windowDays),
+    returnWindowEndsAt: windowEnds?.toISOString() ?? null,
+    facts: { ...facts, deliveredAt: order.deliveredAt?.toISOString() ?? null },
   };
 }
 

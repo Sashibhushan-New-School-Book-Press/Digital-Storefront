@@ -2,6 +2,10 @@
 
 One page to follow when something looks wrong. Keep it next to the on-call
 phone. Companion to [security-roadmap.md](security-roadmap.md).
+Production runs on **Hostinger** and dev on **Vercel**
+(`setup/environments.md`). Each environment has its own Supabase
+projects and keys, so contain and rotate in the environment that's
+affected.
 
 ## 0. Who
 
@@ -35,16 +39,16 @@ Do whichever apply — speed beats perfection here.
 | All staff sessions suspect | Admin Supabase project → Settings → JWT → **rotate the JWT secret / signing key** (signs everyone out), then rotate `AUTH_SUPABASE_SERVICE_ROLE_KEY`. |
 | Customer sessions suspect | Same, on the storefront project (signs every customer out). |
 | A secret leaked | Rotate it now (table below), redeploy both apps, then look for use in the provider's logs. |
-| Payments being abused | Unset `RAZORPAY_KEY_ID` in the web app's Vercel env and redeploy — checkout returns "payments aren't switched on" while everything else keeps working. |
+| Payments being abused | Unset `RAZORPAY_KEY_ID` on the web site (Hostinger → Environment variables; saving redeploys). Checkout then says "payments aren't switched on" and everything else keeps working. |
 | Data API exposure | Supabase storefront project → Settings → API → remove `public` from **Exposed schemas**; then run the `lock_down_data_api` migration if it isn't applied. |
 | Malicious file uploaded | Delete the object in Supabase Storage (`ebooks`/`images`) and its `file_assets` row; the library stops serving it immediately. |
-| Site under request flood | Vercel → Firewall: enable Attack Challenge Mode; add a rate-limit rule on `/api/*`. |
+| Site under request flood | The app's own rate limits (Upstash) still apply. On production, put the domain behind a CDN/WAF (for example Cloudflare, which is a DNS change) if the flood continues. On dev: Vercel → Firewall → Attack Challenge Mode. |
 
 ### Key rotation
 
 | Secret | Where to rotate | Update in |
 |--------|-----------------|-----------|
-| `SUPABASE_SERVICE_ROLE_KEY` | Storefront Supabase → Settings → API keys | web + admin (Vercel) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Storefront Supabase → Settings → API keys | web + admin |
 | `AUTH_SUPABASE_SERVICE_ROLE_KEY` | Admin Supabase → Settings → API keys | admin |
 | DB password (`DATABASE_URL`/`DIRECT_URL`) | Storefront Supabase → Settings → Database | web + admin + `packages/database/.env` |
 | `RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET` | Razorpay Dashboard → API Keys / Webhooks | web |
@@ -55,7 +59,7 @@ Do whichever apply — speed beats perfection here.
 ## 3. Investigate
 
 - `audit_logs` (every staff mutation, with `actorEmail`) — `select * from audit_logs order by "createdAt" desc limit 200;`
-- Vercel → Logs (filter `"security":true`), Supabase → Logs (Auth, API, Postgres), Razorpay → Payments/Webhooks.
+- The runtime logs on Hostinger (production) or Vercel (dev), filtered on `"security":true`; Supabase → Logs (Auth, API, Postgres); Razorpay → Payments/Webhooks.
 - Preserve evidence before cleaning up: export the relevant log ranges and table rows.
 
 ## 4. Notify (India)
@@ -63,7 +67,8 @@ Do whichever apply — speed beats perfection here.
 - **CERT-In**: report cyber-security incidents within **6 hours** of noticing
   them (CERT-In Directions, 28 April 2022) — incident@cert-in.org.in /
   https://www.cert-in.org.in. ICT logs must be retained for **180 days**
-  (configure a Vercel log drain + Supabase log retention accordingly).
+  (set up a log drain and Supabase log retention to match; this is still open,
+  see the roadmap).
 - **DPDP Act 2023**: a personal-data breach must be reported to the Data
   Protection Board and to each affected person, in the form and time the
   DPDP Rules prescribe.

@@ -5,9 +5,17 @@
 #   - OWASP ZAP baseline scan (passive; report only)
 #   - Lighthouse performance budgets (storefront only)
 #
-# Secrets: VERCEL_AUTOMATION_BYPASS_SECRET (Vercel → project → Settings →
-# Deployment Protection → Protection Bypass for Automation) so tests can reach
-# protected previews. Same value for both projects, or name it per project.
+# Secrets: the Vercel bypass token (Vercel → project → Settings → Deployment
+# Protection → Protection Bypass for Automation), so the checks can get past
+# Vercel's login wall on deployment URLs. Each Vercel project has its own:
+# VERCEL_AUTOMATION_BYPASS_SECRET_WEB and VERCEL_AUTOMATION_BYPASS_SECRET_ADMIN
+# (or one VERCEL_AUTOMATION_BYPASS_SECRET if both projects share a value).
+# Without the app's token every check would only see vercel.com/login, so they
+# are skipped with a warning instead.
+#
+# Vercel only hosts the development phase. Hostinger (production) reports no
+# GitHub deployment statuses, so this workflow never runs for it — run the
+# same tests against the live URL by hand (docs/testing.md).
 name: post-deploy
 
 on:
@@ -29,6 +37,7 @@ jobs:
       app: ${{ steps.which.outputs.app }}
       url: ${{ steps.which.outputs.url }}
       production: ${{ steps.which.outputs.production }}
+      ready: ${{ steps.bypass.outputs.ready }}
     steps:
       - id: which
         env:
@@ -48,10 +57,25 @@ jobs:
           echo "url=${URL%/}" >> "$GITHUB_OUTPUT"
           echo "production=$production" >> "$GITHUB_OUTPUT"
           echo "Verifying $app at ${URL%/} (${ENVIRONMENT})"
+      - name: Check for the Vercel bypass token
+        id: bypass
+        env:
+          APP: ${{ steps.which.outputs.app }}
+          WEB_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_WEB || secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          ADMIN_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_ADMIN || secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          if [ "$APP" = admin ]; then token="$ADMIN_BYPASS"; name=VERCEL_AUTOMATION_BYPASS_SECRET_ADMIN
+          else token="$WEB_BYPASS"; name=VERCEL_AUTOMATION_BYPASS_SECRET_WEB; fi
+          if [ -n "$token" ]; then
+            echo "ready=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Post-deploy checks skipped ($APP)::No $name secret, so every check would only reach vercel.com/login. Add it from Vercel → project → Settings → Deployment Protection → Protection Bypass for Automation."
+          fi
 
   smoke:
     name: Smoke, sanity, security (${{ needs.target.outputs.app }})
     needs: target
+    if: needs.target.outputs.ready == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -69,7 +93,7 @@ jobs:
           E2E_WEB_URL: ${{ needs.target.outputs.app == 'web' && needs.target.outputs.url || '' }}
           E2E_ADMIN_URL: ${{ needs.target.outputs.app == 'admin' && needs.target.outputs.url || '' }}
           E2E_PRODUCTION: ${{ needs.target.outputs.production }}
-          E2E_VERCEL_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          E2E_VERCEL_BYPASS: ${{ needs.target.outputs.app == 'admin' && (secrets.VERCEL_AUTOMATION_BYPASS_SECRET_ADMIN || secrets.VERCEL_AUTOMATION_BYPASS_SECRET) || (secrets.VERCEL_AUTOMATION_BYPASS_SECRET_WEB || secrets.VERCEL_AUTOMATION_BYPASS_SECRET) }}
         run: >-
           npx playwright test --config testing/playwright.config.ts
           --project=desktop --grep "@smoke|@sanity|@security"
@@ -84,6 +108,7 @@ jobs:
   zap:
     name: OWASP ZAP baseline (${{ needs.target.outputs.app }})
     needs: target
+    if: needs.target.outputs.ready == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -107,12 +132,12 @@ jobs:
             -config replacer.full_list(0).matchtype=REQ_HEADER
             -config replacer.full_list(0).matchstr=x-vercel-protection-bypass
             -config replacer.full_list(0).regex=false
-            -config replacer.full_list(0).replacement=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}"
+            -config replacer.full_list(0).replacement=${{ needs.target.outputs.app == 'admin' && (secrets.VERCEL_AUTOMATION_BYPASS_SECRET_ADMIN || secrets.VERCEL_AUTOMATION_BYPASS_SECRET) || (secrets.VERCEL_AUTOMATION_BYPASS_SECRET_WEB || secrets.VERCEL_AUTOMATION_BYPASS_SECRET) }}"
 
   lighthouse:
     name: Lighthouse budgets (web)
     needs: target
-    if: needs.target.outputs.app == 'web'
+    if: needs.target.outputs.app == 'web' && needs.target.outputs.ready == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -127,7 +152,7 @@ jobs:
       - run: npm run test:perf --workspace=web
         env:
           E2E_WEB_URL: ${{ needs.target.outputs.url }}
-          E2E_VERCEL_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          E2E_VERCEL_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_WEB || secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           CHROME_PATH: /usr/bin/google-chrome
       - uses: actions/upload-artifact@v4
         if: always()

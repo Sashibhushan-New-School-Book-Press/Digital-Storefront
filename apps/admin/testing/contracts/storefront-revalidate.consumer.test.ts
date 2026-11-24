@@ -81,7 +81,7 @@ describe("admin → storefront cache ping (consumer)", () => {
     vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://cache.upstash.io");
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "token");
     fetchMock.mockImplementation(async (target) =>
-      String(target).startsWith("https://cache.upstash.io")
+      new URL(String(target)).origin === "https://cache.upstash.io"
         ? Response.json([{ result: "OK" }])
         : Response.json({ revalidated: true })
     );

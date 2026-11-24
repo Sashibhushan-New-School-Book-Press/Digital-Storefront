@@ -1,83 +1,41 @@
-# Books listing — scaling to a large catalogue
+# Books listing: scaling to a large catalogue
 
-The books listing (`/educational-material/books`) is built so that response
-time does **not** grow with the size of the catalogue. This note records how,
-and what is still needed for the database-backed path to hold at ~1M rows.
+The storefront's product listings are built so that response time doesn't
+grow with the size of the catalogue. They are `/educational-material/books`
+and the three other Educational Materials lines, which share the same
+machinery. This note records how, and what's still needed at around a
+million rows.
 
-## What makes it flat
+## How it stays flat
 
 | Concern | How it's handled |
-| --- | --- |
-| Loading rows | Every request returns **at most `BOOKS_PAGE_SIZE` (20)** titles. Nothing loads the whole table. |
-| Paging deeper | **Keyset (cursor) pagination**, not `OFFSET`. Each response carries an opaque `nextCursor` = `(sortValue, id)` of the last row; the next request resumes strictly after it. Page 50,000 costs an index seek + 20 rows, same as page 1. |
-| Sorting | Done by the database on an indexed column (`ORDER BY <col>, id`), never in application memory. |
-| Total count | `countBookListings()` is one aggregate, run **only on the initial render**, never per scroll. |
-| Client | `BooksGrid` holds only the rows it has shown and the current cursor. An `IntersectionObserver` requests the next page ~600 px before the sentinel is visible. |
+|---|---|
+| Rows per request | At most `BOOKS_PAGE_SIZE` (20) titles. One `Product` per title, with its `BookEdition`s included, so `LIMIT` counts titles. |
+| Paging deeper | Keyset (cursor) pagination, not `OFFSET`. `nextCursor` is the last row's `(sortValue, id)`, so page 50,000 costs the same as page 1. |
+| Sorting | In the database, `ORDER BY <col>, id`. Price sorts on `Product.priceCents`, the cheapest edition. Rating sorts on `ratingAvg`/`reviewCount`, which default to `0` so the keyset never meets nulls. |
+| Indexes | One `(productLine, <col>, id)` index per sort column. The keyset adds a plain `<col> >= cursor` bound (`<=` when descending) next to its `OR`, because Postgres can't seek on an `OR`. That makes every page a range seek. `isPublished` and `type` are filtered from the rows, since nearly every row in a line passes. |
+| Total count | `countBookListings()`: one aggregate, run only on the first render. |
+| Client | `BooksGrid` keeps only the rows it has shown plus the cursor. An `IntersectionObserver` fetches the next page about 600 px early (TanStack Query). |
+| Caching | Each page is cached through `lib/products-cache.ts`, tagged `catalogue:<line>`, and expired by admin saves and stock moves (`docs/adr/0001-caching-strategy.md`). `/api/books` is also HTTP-cacheable for 60 s. |
 
-Key modules:
+The code:
+- `lib/books-page.ts`: cursor encode/decode and `SORT_KEYS`.
+- `lib/books-data.ts`: `fetchBookPage()` / `countBookListings()` /
+  `buildBookWhere()`, with the `withFallback()` sample catalogue for when
+  the database can't be reached.
+- `app/api/books/route.ts`: `GET /api/books?…&cursor=…` returns
+  `{ items, nextCursor }`.
 
-- `lib/books-page.ts` — cursor encode/decode, the `SORT_KEYS` map, and
-  `paginateSorted()` (the in-memory stand-in for the DB keyset seek).
-- `lib/books-data.ts` — `fetchBookPage()` / `countBookListings()`, querying
-  `Product` with a sample-catalogue fallback (`withFallback()`) for when
-  the database is unreachable.
-- `app/api/books/route.ts` — `GET /api/books?…&cursor=…` → `{ items, nextCursor }`.
+## Still open for very large catalogues
 
-## Live (current)
-
-The Postgres branch is what's live. `fetchBookPage()` / `countBookListings()`
-(`lib/books-data.ts`) query `Product` directly and fall back to the bundled
-sample catalogue (`lib/sample-data/books.ts`, expanded from the seed data
-in `@repo/database`'s `src/book-catalog.ts` — whose `BOOK_SEEDS` is empty
-during the testing phase, so this fallback is currently an empty catalogue)
-only via `withFallback()`, when the database is unreachable or the query
-throws. That means a title added, edited, or
-hidden from the admin's Books CMS shows up on the storefront on the very
-next request — no redeploy, no cache to invalidate.
-
-What made the Postgres branch real, from the state described below:
-
-1. **One `Product` row per title.** The branch assumes the model the admin
-   writes — one `Product` per title, with a `BookEdition` row per format
-   (Paperback / Hardcover / E-book) included alongside — so that `LIMIT`
-   counts titles, not editions. `Product.priceCents` on a book is its
-   cheapest edition, which is what the price sort and bands key on.
-   `prisma/seed.ts` writes any seeded catalogue the same way. (The old
-   `-ebook`-slug two-row model cannot be `LIMIT`ed and is gone.)
-
-2. **`Product.genre`, `Product.ratingAvg`, `Product.reviewCount`.** Added
-   (with `@@index`es) so `sort=rating` / `sort=reviews` and the genre /
-   "N stars & up" filters work server-side — see `SORT_COLUMN` and
-   `buildBookWhere()` in `lib/books-data.ts`. Both rating columns default
-   to `0` rather than null, specifically so keyset pagination on those
-   columns never has to reason about nulls; `rowToListing()` only surfaces
-   a rating once `reviewCount > 0`, so a freshly added, unreviewed book
-   reads as "no rating yet" rather than "rated zero". Nothing aggregates
-   real `Review` rows into `ratingAvg`/`reviewCount` yet — that's the next
-   piece of this, once reviews go through a moderation flow that recomputes
-   them on approval.
-
-## Still open, for genuine O(1M) scale
-
-3. **Indexes on every sort column**, each compounded with `id` for the
-   tie-break:
-   - `(priceCents, id)`
-   - `(title, id)`
-   - `(publishedAt, id)`
-   - `(createdAt, id)`
-   plus a partial predicate or leading column for the always-on filter
-   `isPublished = true AND type IN ('PHYSICAL_BOOK','EBOOK')`.
-
-4. **Text search.** `buildBookWhere()` uses `contains … mode: insensitive`
-   (`ILIKE %term%`), which cannot use a b-tree index. For a large catalogue
-   switch `q` to Postgres full-text (`to_tsvector`/`websearch_to_tsquery`
-   with a GIN index) or a trigram index (`pg_trgm`).
-
-5. **Count cost.** A filtered `COUNT(*)` over ~1M rows is still a scan of the
-   matching index range. Acceptable at one call per navigation; if it shows
-   up in traces, switch the label to an estimate (`reltuples` /
-   `EXPLAIN`-derived) or drop the exact number.
-
-6. **`availableGenres`.** Still just the full `BOOK_GENRES` list rather than
-   "genres that have at least one book" — the latter is now a cheap
-   `SELECT DISTINCT genre` given item 2 landed, just not wired up.
+1. **Text search.** `q` uses `contains … insensitive` (`ILIKE %term%`),
+   which can't use a b-tree index. Move to Postgres full-text (GIN) or
+   `pg_trgm`.
+2. **Count cost.** A filtered `COUNT(*)` scans the matching range. If it
+   shows up in traces, switch to an estimate or drop the exact number.
+3. **Ratings aren't aggregated.** Nothing writes `ratingAvg`/`reviewCount`
+   from `Review` rows yet. Reviews are cut from launch; when moderation is
+   built, approving a review should recompute both and call
+   `revalidateStorefront(productChangedTags(…))`.
+4. **`availableGenres`** is still the full `BOOK_GENRES` list rather than a
+   `SELECT DISTINCT genre`.

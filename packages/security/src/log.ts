@@ -32,6 +32,8 @@ export type SecurityEventName =
   | "webhook.amount_mismatch"
   | "webhook.paid_after_cancel"
   | "library.not_entitled"
+  // Cancel/return on an order id that isn't the caller's (or doesn't exist).
+  | "account.order_not_found"
   | "library.limit_reached"
   | "upload.rejected"
   | "staff_invite.invalid_token"

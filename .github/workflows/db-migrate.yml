@@ -1,10 +1,10 @@
 # Database deployment (docs/production-launch.md: "Apply pending migrations
 # to production before promoting code"). Manual, per environment:
-# Actions → db-migrate → Run workflow → staging | production.
+# Actions → db-migrate → Run workflow → dev | production.
 #
-# Set up once (Settings → Environments):
-#   - environments `staging` and `production`, each with a DIRECT_URL secret
-#     (the non-pooled Postgres URL, port 5432)
+# Set up once (Settings → Environments; docs/setup/environments.sh walks it):
+#   - environments `dev` and `production`, each with a DIRECT_URL secret
+#     (the session-pooler / direct Postgres URL, port 5432)
 #   - `production`: Required reviewers, so a migration needs a second click
 name: db-migrate
 
@@ -14,8 +14,8 @@ on:
       environment:
         description: Which database to migrate
         type: choice
-        options: [staging, production]
-        default: staging
+        options: [dev, production]
+        default: dev
 
 permissions:
   contents: read

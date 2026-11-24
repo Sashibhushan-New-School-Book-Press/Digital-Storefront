@@ -68,8 +68,17 @@ export default async function AdminDashboard({ searchParams }: { searchParams: P
   // The headline figures and the chart are aggregates cached for a minute
   // (lib/admin-cache.ts); what needs attention and the latest orders are
   // always read live.
-  const [periodStats, recentOrders, weekRevenue, ordersToProcess, pendingSubmissions, pendingServiceRequests] =
-    await Promise.all([
+  const [
+    periodStats,
+    recentOrders,
+    weekRevenue,
+    ordersToProcess,
+    pendingSubmissions,
+    pendingServiceRequests,
+    returnsToHandle,
+    cancellationRefunds,
+    returnRefunds,
+  ] = await Promise.all([
       getPeriodStats(start.toISOString()),
       prisma.order.findMany({
         orderBy: { createdAt: "desc" },
@@ -80,7 +89,13 @@ export default async function AdminDashboard({ searchParams }: { searchParams: P
       prisma.order.count({ where: { shipmentStatus: "AWAITING_APPROVAL" } }),
       prisma.selfPublishingProject.count({ where: { status: { in: ["SUBMITTED", "IN_REVIEW"] } } }),
       prisma.serviceRequest.count({ where: { status: "SUBMITTED" } }),
+      // Customers' returns waiting on a decision or on the parcel coming back,
+      // and refunds worked out but not yet sent by hand.
+      prisma.orderReturn.count({ where: { status: { in: ["REQUESTED", "APPROVED"] } } }),
+      prisma.orderCancellation.count({ where: { refundCents: { gt: 0 }, refundedAt: null } }),
+      prisma.orderReturn.count({ where: { status: "COMPLETED", refundCents: { gt: 0 }, refundedAt: null } }),
     ]);
+  const refundsToSend = cancellationRefunds + returnRefunds;
 
   const { revenueCents: totalRevenueCents, orderCount, revenueOrderCount, newCustomers } = periodStats;
   const avgOrderCents = revenueOrderCount ? Math.round(totalRevenueCents / revenueOrderCount) : 0;
@@ -100,9 +115,17 @@ export default async function AdminDashboard({ searchParams }: { searchParams: P
     <div className="max-w-6xl">
       <PageHeader title="Dashboard" description="What needs attention today, and how the shop's doing." />
 
-      {(ordersToProcess > 0 || pendingSubmissions > 0 || pendingServiceRequests > 0) && (
+      {(ordersToProcess > 0 ||
+        returnsToHandle > 0 ||
+        refundsToSend > 0 ||
+        pendingSubmissions > 0 ||
+        pendingServiceRequests > 0) && (
         <div className="-mt-3 mb-6 flex flex-wrap gap-2.5">
-          {ordersToProcess > 0 && <AttentionLink href="/supply/sales-orders" count={ordersToProcess} label="orders to approve" />}
+          {ordersToProcess > 0 && <AttentionLink href="/supply/sales-orders?filter=approval" count={ordersToProcess} label="orders to approve" />}
+          {returnsToHandle > 0 && (
+            <AttentionLink href="/supply/sales-orders?filter=returns" count={returnsToHandle} label="returns to handle" />
+          )}
+          {refundsToSend > 0 && <AttentionLink href="/supply/sales-orders?filter=refunds" count={refundsToSend} label="refunds to send" />}
           {pendingSubmissions > 0 && (
             <AttentionLink href="/submissions" count={pendingSubmissions} label="submissions to review" />
           )}
