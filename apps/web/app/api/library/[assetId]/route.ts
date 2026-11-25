@@ -14,6 +14,13 @@ import { entitledAssetsWhere } from "@/lib/library";
  * Entitlement rules live in lib/library.ts. The per-customer download count
  * is claimed atomically (a conditional increment), so two parallel requests
  * can't both take the last download.
+ *
+ * The check and the claim run in one transaction that first locks the
+ * customer's orders for this e-book. "Cancel order" and "Return order"
+ * (app/(account)/account/orders/actions.ts) lock the same order row before
+ * they look for a download, so whichever comes second sees the other: a
+ * download can't slip through while the e-book is being cancelled or
+ * returned, which would leave the customer with the file and a refund.
  */
 const NO_STORE = { "Cache-Control": "private, no-store" };
 
@@ -29,37 +36,54 @@ export async function GET(_request: Request, { params }: { params: Promise<{ ass
     return NextResponse.json({ error: "Not available" }, { status: 404, headers: NO_STORE });
   }
 
-  const asset = await prisma.fileAsset.findFirst({
-    where: { id: assetId, ...entitledAssetsWhere(user.id) },
-    select: { id: true, blobPath: true, maxDownloads: true },
+  const outcome = await prisma.$transaction(async (tx) => {
+    // Wait out any cancellation or return being made on these orders right
+    // now (see above). In id order, so two downloads can't deadlock.
+    await tx.$queryRaw`
+      SELECT o.id FROM orders o
+      JOIN order_items i ON i."orderId" = o.id
+      JOIN file_assets f ON f."productId" = i."productId"
+      WHERE f.id = ${assetId} AND o."userId" = ${user.id}::uuid AND i."includesEbook"
+      ORDER BY o.id
+      FOR UPDATE OF o`;
+
+    const asset = await tx.fileAsset.findFirst({
+      where: { id: assetId, ...entitledAssetsWhere(user.id) },
+      select: { id: true, blobPath: true, maxDownloads: true },
+    });
+    if (!asset) return { status: "not_entitled" } as const;
+
+    // Claim one download for this customer, atomically.
+    await tx.libraryDownload.upsert({
+      where: { userId_fileAssetId: { userId: user.id, fileAssetId: asset.id } },
+      create: { userId: user.id, fileAssetId: asset.id },
+      update: {},
+    });
+    const claimed = await tx.libraryDownload.updateMany({
+      where: {
+        userId: user.id,
+        fileAssetId: asset.id,
+        ...(asset.maxDownloads != null ? { count: { lt: asset.maxDownloads } } : {}),
+      },
+      data: { count: { increment: 1 }, lastDownloadedAt: new Date() },
+    });
+    if (claimed.count === 0) return { status: "limit_reached", asset } as const;
+    // All-customers total, kept for reporting only.
+    await tx.fileAsset.update({ where: { id: asset.id }, data: { downloadCount: { increment: 1 } } });
+    return { status: "claimed", asset } as const;
   });
-  if (!asset) {
+
+  if (outcome.status === "not_entitled") {
     // One answer for "doesn't exist", "not scanned" and "not yours", so the
     // endpoint can't be used to probe which asset ids exist.
     securityEvent("library.not_entitled", { userId: user.id, assetId });
     return NextResponse.json({ error: "Not available" }, { status: 404, headers: NO_STORE });
   }
-
-  // Claim one download for this customer, atomically.
-  await prisma.libraryDownload.upsert({
-    where: { userId_fileAssetId: { userId: user.id, fileAssetId: asset.id } },
-    create: { userId: user.id, fileAssetId: asset.id },
-    update: {},
-  });
-  const claimed = await prisma.libraryDownload.updateMany({
-    where: {
-      userId: user.id,
-      fileAssetId: asset.id,
-      ...(asset.maxDownloads != null ? { count: { lt: asset.maxDownloads } } : {}),
-    },
-    data: { count: { increment: 1 }, lastDownloadedAt: new Date() },
-  });
-  if (claimed.count === 0) {
+  const { asset } = outcome;
+  if (outcome.status === "limit_reached") {
     securityEvent("library.limit_reached", { userId: user.id, assetId: asset.id });
     return NextResponse.json({ error: "Download limit reached" }, { status: 403, headers: NO_STORE });
   }
-  // All-customers total, kept for reporting only.
-  await prisma.fileAsset.update({ where: { id: asset.id }, data: { downloadCount: { increment: 1 } } });
 
   // Legacy/seed rows store a full public URL; e-books uploaded from the admin
   // store a private Supabase Storage path, which we sign for ~5 minutes.

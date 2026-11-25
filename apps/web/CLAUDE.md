@@ -194,8 +194,11 @@ set:
 - **Library and downloads.**
   - `entitledAssetsWhere()` / `ownsEbook()` (`lib/library.ts`) define
     entitlement. Cancelled lines and lines in an open return are excluded.
-  - `api/library/[assetId]` checks entitlement, then claims one download
-    in `LibraryDownload` (per customer, per file).
+  - `api/library/[assetId]` checks entitlement and claims one download in
+    `LibraryDownload` (per customer, per file), in one transaction that
+    first locks the customer's orders for that e-book. `cancelOrder` and
+    `requestReturn` lock the same order row before they look for a
+    download, so a download can't slip past a cancellation or return.
   - It then redirects to a ~5-minute signed URL from
     `createEbookDownloadUrl()`. A legacy `https` `blobPath` is redirected
     as-is, and any other scheme is refused.

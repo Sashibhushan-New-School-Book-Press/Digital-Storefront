@@ -24,7 +24,8 @@
  *
  * Refunds: the lines' price less their share of the order's discount. A
  * cancellation that calls the parcel off also refunds the delivery charge,
- * and so does the first return the Press caused (damaged, wrong item).
+ * and so does the first return of printed copies the Press caused (damaged,
+ * wrong item) — an e-book-only one has no delivery to give back.
  * Never more than what's left of the order total. A cancelled cash-on-
  * delivery order had not been paid, so nothing is owed. There's no refund
  * integration: staff send the money from the Razorpay dashboard (by bank
@@ -117,7 +118,8 @@ export interface OrderFacts {
   paymentStatus: PaymentStatus | null;
   items: OrderLineFacts[];
   cancellations: { refundCents: number }[];
-  returns: { status: ReturnStatus; reason: string; refundCents: number }[];
+  /** `printed`: it sent printed copies back (so a Press-fault one refunded delivery). */
+  returns: { status: ReturnStatus; reason: string; refundCents: number; printed: boolean }[];
 }
 
 /** The Prisma rows `toOrderFacts` reads — an Order with its items, payment, cancellations and returns. */
@@ -149,6 +151,7 @@ export interface OrderFactsRow {
  * (`LibraryDownload.count > 0`).
  */
 export function toOrderFacts(row: OrderFactsRow, downloadedProductIds: ReadonlySet<string>): OrderFacts {
+  const printedLines = new Set(row.items.filter((item) => item.fulfillmentType === "SHIP").map((item) => item.id));
   const returned = new Map<string, number>();
   for (const orderReturn of row.returns) {
     if (orderReturn.status === "REJECTED") continue;
@@ -176,7 +179,12 @@ export function toOrderFacts(row: OrderFactsRow, downloadedProductIds: ReadonlyS
       ebookDownloaded: item.includesEbook && downloadedProductIds.has(item.productId),
     })),
     cancellations: row.cancellations.map(({ refundCents }) => ({ refundCents })),
-    returns: row.returns.map(({ status, reason, refundCents }) => ({ status, reason, refundCents })),
+    returns: row.returns.map(({ status, reason, refundCents, items }) => ({
+      status,
+      reason,
+      refundCents,
+      printed: items.some((item) => printedLines.has(item.orderItemId)),
+    })),
   };
 }
 
@@ -382,8 +390,11 @@ export function returnRefundCents(order: OrderFacts, selection: readonly ReturnS
     const line = order.items.find((candidate) => candidate.id === picked.lineId);
     if (line) value += line.unitPriceCents * picked.quantity;
   }
+  // Only a Press-fault return with printed copies in it refunded delivery —
+  // an e-book-only one never does (below), so it doesn't use it up.
   const deliveryRefunded = order.returns.some(
-    (orderReturn) => orderReturn.status !== "REJECTED" && PRESS_FAULT_REASONS.has(orderReturn.reason)
+    (orderReturn) =>
+      orderReturn.status !== "REJECTED" && orderReturn.printed && PRESS_FAULT_REASONS.has(orderReturn.reason)
   );
   const delivery =
     PRESS_FAULT_REASONS.has(reason) && !deliveryRefunded && returnsPrintedCopies(order, selection)

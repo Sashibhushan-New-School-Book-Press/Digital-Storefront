@@ -174,9 +174,9 @@ describe("returning", () => {
 
   it("allows one return at a time, and only the copies not already going back", () => {
     const three = line({ quantity: 3, returnedQuantity: 1 });
-    const busy = delivered({ items: [three], returns: [{ status: "REQUESTED", reason: "NOT_NEEDED", refundCents: 0 }] });
+    const busy = delivered({ items: [three], returns: [{ status: "REQUESTED", reason: "NOT_NEEDED", refundCents: 0, printed: true }] });
     expect(canReturn(busy, inWindow, WINDOW)).toBe(false);
-    const after = delivered({ items: [three], returns: [{ status: "COMPLETED", reason: "NOT_NEEDED", refundCents: 0 }] });
+    const after = delivered({ items: [three], returns: [{ status: "COMPLETED", reason: "NOT_NEEDED", refundCents: 0, printed: true }] });
     expect(canReturn(after, inWindow, WINDOW)).toBe(true);
     expect(checkReturnSelection(after, [{ lineId: "paperback", quantity: 2 }], inWindow, WINDOW)).toEqual({ ok: true });
     expect(checkReturnSelection(after, [{ lineId: "paperback", quantity: 3 }], inWindow, WINDOW).ok).toBe(false);
@@ -216,7 +216,7 @@ describe("returnRefundCents", () => {
 
   it("adds the delivery charge, once, when the Press got it wrong", () => {
     expect(returnRefundCents(twoCopies(), [{ lineId: "paperback", quantity: 1 }], "DAMAGED")).toBe(49_900);
-    const second = { ...twoCopies(), returns: [{ status: "COMPLETED" as const, reason: "DAMAGED", refundCents: 49_900 }] };
+    const second = { ...twoCopies(), returns: [{ status: "COMPLETED" as const, reason: "DAMAGED", refundCents: 49_900, printed: true }] };
     expect(returnRefundCents(second, [{ lineId: "paperback", quantity: 1 }], "WRONG_ITEM")).toBe(45_000);
   });
 
@@ -246,14 +246,17 @@ describe("toOrderFacts", () => {
         returns: [
           { status: "COMPLETED", reason: "NOT_NEEDED", refundCents: 1, items: [{ orderItemId: "a", quantity: 1 }] },
           { status: "REJECTED", reason: "NOT_NEEDED", refundCents: 1, items: [{ orderItemId: "a", quantity: 2 }] },
+          { status: "COMPLETED", reason: "WRONG_ITEM", refundCents: 1, items: [{ orderItemId: "b", quantity: 1 }] },
         ],
       },
       new Set(["p1", "p2"])
     );
     expect(facts.items).toMatchObject([
       { id: "a", returnedQuantity: 1, cancelled: false, ebookDownloaded: false },
-      { id: "b", returnedQuantity: 0, cancelled: true, ebookDownloaded: true },
+      { id: "b", returnedQuantity: 1, cancelled: true, ebookDownloaded: true },
     ]);
+    // Which returns sent printed copies back.
+    expect(facts.returns.map((orderReturn) => orderReturn.printed)).toEqual([true, true, false]);
   });
 });
 
@@ -353,7 +356,7 @@ describe("checkReturnSelection, refusing", () => {
   });
 
   it("anything while a return is under way, before looking at the pick", () => {
-    const busy = delivered({ returns: [{ status: "APPROVED", reason: "NOT_NEEDED", refundCents: 0 }] });
+    const busy = delivered({ returns: [{ status: "APPROVED", reason: "NOT_NEEDED", refundCents: 0, printed: true }] });
     expect(checkReturnSelection(busy, [], inWindow, WINDOW)).toEqual({
       ok: false,
       error: "A return for this order is already under way.",
@@ -422,9 +425,9 @@ describe("refund maths", () => {
     const history = delivered({
       cancellations: [{ refundCents: 100 }],
       returns: [
-        { status: "COMPLETED", reason: "NOT_NEEDED", refundCents: 200 },
-        { status: "REJECTED", reason: "NOT_NEEDED", refundCents: 400 },
-        { status: "REQUESTED", reason: "NOT_NEEDED", refundCents: 800 },
+        { status: "COMPLETED", reason: "NOT_NEEDED", refundCents: 200, printed: true },
+        { status: "REJECTED", reason: "NOT_NEEDED", refundCents: 400, printed: true },
+        { status: "REQUESTED", reason: "NOT_NEEDED", refundCents: 800, printed: true },
       ],
     });
     expect(refundsSoFarCents(history)).toBe(1_100);
@@ -435,7 +438,7 @@ describe("refund maths", () => {
       items: [line({ quantity: 2 })],
       shippingCents: 4_900,
       totalCents: 104_900,
-      returns: [{ status: "REJECTED", reason: "DAMAGED", refundCents: 54_900 }],
+      returns: [{ status: "REJECTED", reason: "DAMAGED", refundCents: 54_900, printed: true }],
     });
     expect(returnRefundCents(rejected, [{ lineId: "paperback", quantity: 1 }], "DAMAGED")).toBe(54_900);
   });
@@ -464,23 +467,20 @@ describe("refund maths", () => {
       current = {
         ...current,
         items: [{ ...current.items[0]!, returnedQuantity: copy }],
-        returns: [...current.returns, { status: "COMPLETED", reason: "DAMAGED", refundCents: refund }],
+        returns: [...current.returns, { status: "COMPLETED", reason: "DAMAGED", refundCents: refund, printed: true }],
       };
     }
     expect(refunded).toBe(94_899);
     expect(returnBlock(current, current.items[0]!, inWindow, WINDOW)).toBe("RETURNED");
   });
 
-  // KNOWN BUG — flip to `it` once fixed. `returnRefundCents` treats any earlier
-  // DAMAGED/WRONG_ITEM return as having refunded delivery, but an e-book-only
-  // return never does (`returnsPrintedCopies` is false for it), so the
-  // customer's printed return the Press got wrong never gets delivery back.
-  it.fails("refunds delivery for printed copies after an e-book-only Press-fault return", () => {
+  // An e-book-only return never refunds delivery, so it doesn't use it up.
+  it("refunds delivery for printed copies after an e-book-only Press-fault return", () => {
     const mixed = delivered({
       items: [line(), ebookLine()],
       shippingCents: 4_900,
       totalCents: 74_900,
-      returns: [{ status: "COMPLETED", reason: "WRONG_ITEM", refundCents: 20_000 }],
+      returns: [{ status: "COMPLETED", reason: "WRONG_ITEM", refundCents: 20_000, printed: false }],
     });
     expect(returnRefundCents(mixed, [{ lineId: "paperback", quantity: 1 }], "DAMAGED")).toBe(54_900);
   });

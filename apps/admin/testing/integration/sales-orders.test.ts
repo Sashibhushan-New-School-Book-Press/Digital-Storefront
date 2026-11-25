@@ -102,6 +102,37 @@ describe.skipIf(!testDatabaseUrl())("moving a sales order the customer has partl
     });
   });
 
+  it("restocks once when the customer cancels just as staff deny", async () => {
+    const product = await book(5);
+    const placed = await order(product.id, [{ kind: "paperback" }, { kind: "bundle", quantity: 2 }]);
+    // The customer's "Cancel order" commits after Deny has read the order but
+    // before it writes: their paperback is cancelled and put back on the shelf.
+    // (The bundle's e-book was downloaded, so the parcel stays for it.)
+    // (Overridden by hand: vi.spyOn can't restore a method on Prisma 7's client.)
+    const client = prisma as unknown as Record<"$transaction", (...args: unknown[]) => Promise<unknown>>;
+    const transaction = client.$transaction.bind(prisma);
+    client.$transaction = async (...args) => {
+      delete (client as Partial<typeof client>).$transaction;
+      const cancellation = await prisma.orderCancellation.create({ data: { orderId: placed.id, reason: "CHANGED_MIND" } });
+      await prisma.orderItem.update({ where: { id: placed.items[0]!.id }, data: { cancellationId: cancellation.id } });
+      await prisma.bookEdition.update({
+        where: { productId_format: { productId: product.id, format: "PAPERBACK" } },
+        data: { stockQty: { increment: 1 } },
+      });
+      return transaction(...args);
+    };
+
+    try {
+      expect(await moveSalesOrder({ orderId: placed.id, from: "AWAITING_APPROVAL", move: "deny" })).toEqual({ ok: true });
+    } finally {
+      delete (client as Partial<typeof client>).$transaction;
+    }
+    expect(typeof prisma.$transaction).toBe("function");
+
+    // 5 on the shelf, the customer's paperback back, then the bundle's 2 — not the paperback again.
+    expect(await paperbackStock(product.id)).toBe(8);
+  });
+
   it("cancels the whole order on Deny once the customer has cancelled its only e-book", async () => {
     const product = await book(5);
     const placed = await order(product.id, [{ kind: "paperback" }, { kind: "ebook", cancelled: true }]);

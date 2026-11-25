@@ -69,6 +69,12 @@ Any other local Postgres works too (`createdb storefront_test`). CI uses a
 `postgres:17` service container. Integration tests run `prisma migrate deploy`
 on it first; the migration suite drops and rebuilds the schema.
 
+`prisma dev` is PGlite, one session shared by every connection, so the tests
+that fire two actions at once ("…when two staff click together") can fail
+with `bind message supplies N parameters, but prepared statement "" requires
+0`. That's the database, not the app: run them against a real Postgres, as
+CI does.
+
 ### Signed-in E2E tests
 
 Put a dedicated test customer (storefront Supabase project) and a `SUPPORT`

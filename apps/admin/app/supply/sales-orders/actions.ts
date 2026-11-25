@@ -95,17 +95,7 @@ export async function moveSalesOrder(input: z.input<typeof moveSchema>): Promise
       guestEmail: true,
       shippingAddress: true,
       user: { select: { email: true } },
-      items: {
-        select: {
-          productId: true,
-          bookFormat: true,
-          quantity: true,
-          fulfillmentType: true,
-          includesEbook: true,
-          cancellationId: true,
-          product: { select: { slug: true, productLine: true, type: true } },
-        },
-      },
+      items: { select: { fulfillmentType: true, includesEbook: true, cancellationId: true } },
     },
   });
   if (!order) return { ok: false, error: "This order no longer exists." };
@@ -115,12 +105,13 @@ export async function moveSalesOrder(input: z.input<typeof moveSchema>): Promise
 
   // Lines the customer already cancelled from My Orders are out of it:
   // their copies are back on the shelf and their e-book no longer counts.
+  // (A cancellation landing after this read can't change the answer: it
+  // either calls the parcel off, so the update below misses, or leaves a
+  // print + e-book line standing, which is still delivered online.)
   const standing = order.items.filter((item) => item.cancellationId === null);
   const cancelWholeOrder = to === "CANCELLED" && !hasOnlinePart(standing);
-  const shippedItems = standing.filter((item) => item.fulfillmentType === "SHIP");
-  const shipped = shippedItems.map(({ productId, bookFormat, quantity }) => ({ productId, bookFormat, quantity }));
 
-  const moved = await prisma.$transaction(async (tx) => {
+  const restocked = await prisma.$transaction(async (tx) => {
     const { count } = await tx.order.updateMany({
       where: { id: orderId, shipmentStatus: from },
       data: {
@@ -131,13 +122,25 @@ export async function moveSalesOrder(input: z.input<typeof moveSchema>): Promise
         ...(to === "DELIVERED" && { deliveredAt: new Date() }),
       },
     });
+    if (count !== 1) return null;
+    if (to !== "CANCELLED") return [];
     // Checkout took these copies off the shelf; a refused parcel puts them
     // back. (An item staff only started counting after the order was placed
-    // gains copies it never lost — the same trade-off checkout makes.)
-    if (count === 1 && to === "CANCELLED") await returnStock(tx, shipped);
-    return count === 1;
+    // gains copies it never lost — the same trade-off checkout makes.) Read
+    // now that the update above holds the order's row lock — a customer's
+    // cancellation takes that lock too — so copies their cancellation has
+    // already put back aren't put back twice.
+    const lines = await tx.orderItem.findMany({
+      where: { orderId, fulfillmentType: "SHIP", cancellationId: null },
+      select: { productId: true, bookFormat: true, quantity: true, product: { select: { slug: true, productLine: true, type: true } } },
+    });
+    await returnStock(
+      tx,
+      lines.map(({ productId, bookFormat, quantity }) => ({ productId, bookFormat, quantity }))
+    );
+    return lines;
   });
-  if (!moved) return { ok: false, error: "Someone else has just updated this order. The list has been refreshed." };
+  if (!restocked) return { ok: false, error: "Someone else has just updated this order. The list has been refreshed." };
 
   await prisma.auditLog.create({
     data: {
@@ -182,7 +185,7 @@ export async function moveSalesOrder(input: z.input<typeof moveSchema>): Promise
   // The dashboard's cached revenue and order figures.
   revalidateTag(ORDER_STATS_TAG, { expire: 0 });
   // Returned copies change what the storefront shows as in stock.
-  if (to === "CANCELLED" && shipped.length) revalidateStorefront(stockReturnedTags(shippedItems.map((item) => item.product)));
+  if (restocked.length) revalidateStorefront(stockReturnedTags(restocked.map((item) => item.product)));
   return { ok: true };
 }
 
