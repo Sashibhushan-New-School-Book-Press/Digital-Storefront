@@ -7,11 +7,11 @@ import { z } from "zod";
  */
 
 const rupees = (label: string) =>
-  z.coerce.number({ invalid_type_error: `${label} must be a number` }).min(0, `${label} can't be negative`);
+  z.coerce.number({ error: `${label} must be a number` }).min(0, `${label} can't be negative`);
 
 const percent = (label: string) =>
   z.coerce
-    .number({ invalid_type_error: `${label} must be a number` })
+    .number({ error: `${label} must be a number` })
     .min(0, `${label} can't be negative`)
     .max(100, `${label} can't be more than 100%`);
 
@@ -39,7 +39,7 @@ export const pricingSettingsFormSchema = z.object({
 
 export const classSetTierFormSchema = z.object({
   quantity: z.coerce
-    .number({ invalid_type_error: "Quantity must be a whole number" })
+    .number({ error: "Quantity must be a whole number" })
     .int("Quantity must be a whole number")
     // A "tier" of one copy is the undiscounted price, which the storefront
     // always synthesises — accepting one here would let the Publisher put a

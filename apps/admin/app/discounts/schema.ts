@@ -14,7 +14,7 @@ const optionalRupees = (label: string) =>
   z.preprocess(
     blankToUndefined,
     z.coerce
-      .number({ invalid_type_error: `${label} must be a number` })
+      .number({ error: `${label} must be a number` })
       .min(0, `${label} can't be negative`)
       .max(10_00_000, `${label} is too large`)
       .optional()
@@ -24,7 +24,7 @@ const optionalCount = (label: string) =>
   z.preprocess(
     blankToUndefined,
     z.coerce
-      .number({ invalid_type_error: `${label} must be a whole number` })
+      .number({ error: `${label} must be a whole number` })
       .int(`${label} must be a whole number`)
       .min(1, `${label} has to be at least 1 — leave it empty for no limit`)
       .max(1_000_000, `${label} is too large`)
@@ -45,8 +45,8 @@ export const discountCodeFormSchema = z
       .min(2, "A code needs at least 2 characters")
       .max(24, "Keep codes under 24 characters")
       .regex(/^[A-Za-z0-9-]+$/, "Use letters, numbers and hyphens only — no spaces"),
-    type: z.enum(["PERCENT", "FLAT"], { errorMap: () => ({ message: "Pick a discount type" }) }),
-    value: z.coerce.number({ invalid_type_error: "The discount must be a number" }).positive("A code has to take something off"),
+    type: z.enum(["PERCENT", "FLAT"], { error: "Pick a discount type" }),
+    value: z.coerce.number({ error: "The discount must be a number" }).positive("A code has to take something off"),
     maxDiscount: optionalRupees("Maximum discount"),
     minOrder: optionalRupees("Minimum order"),
     startsOn: optionalDate("Start date"),

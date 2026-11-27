@@ -77,7 +77,7 @@ async function assertNotDownloaded(
 
 const cancelSchema = z.object({
   orderId: idSchema,
-  reason: z.enum(CANCEL_REASON_KEYS, { message: "Choose why you're cancelling." }),
+  reason: z.enum(CANCEL_REASON_KEYS, { error: "Choose why you're cancelling." }),
   note: noteSchema,
 });
 
@@ -178,7 +178,7 @@ export async function cancelOrder(input: z.input<typeof cancelSchema>): Promise<
 
 const returnSchema = z.object({
   orderId: idSchema,
-  reason: z.enum(RETURN_REASON_KEYS, { message: "Choose why you're returning it." }),
+  reason: z.enum(RETURN_REASON_KEYS, { error: "Choose why you're returning it." }),
   note: noteSchema,
   packagingUnopened: z.boolean(),
   items: z

@@ -13,12 +13,12 @@ export const inviteStaffSchema = z.object({
 export const STAFF_ROLES = ["READER", "SUPPORT", "EDITOR", "OWNER"] as const;
 
 export const changeRoleSchema = z.object({
-  userId: z.string().uuid("Unknown staff member"),
+  userId: z.uuid("Unknown staff member"),
   role: z.enum(STAFF_ROLES),
 });
 
 export const removeStaffSchema = z.object({
-  userId: z.string().uuid("Unknown staff member"),
+  userId: z.uuid("Unknown staff member"),
 });
 
 export type InviteStaffValues = z.infer<typeof inviteStaffSchema>;

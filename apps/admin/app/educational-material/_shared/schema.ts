@@ -14,7 +14,7 @@ import { httpsUrl } from "@/lib/schema-fields";
  */
 
 /** Turns "" / missing FormData entries into `undefined` before the inner schema runs. */
-function optional<T extends z.ZodTypeAny>(schema: T) {
+function optional<T extends z.ZodType>(schema: T) {
   return z.preprocess((v) => (v === "" || v == null ? undefined : v), schema.optional());
 }
 
@@ -25,7 +25,7 @@ function optionalInt() {
 function requiredInt(message: string) {
   return z.preprocess(
     (v) => (v === "" || v == null ? undefined : Number(v)),
-    z.number({ required_error: message, invalid_type_error: message }).int("Must be a whole number").min(0, "Must be zero or more")
+    z.number({ error: message }).int("Must be a whole number").min(0, "Must be zero or more")
   );
 }
 

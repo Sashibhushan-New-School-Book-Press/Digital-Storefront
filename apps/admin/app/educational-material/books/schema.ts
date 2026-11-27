@@ -2,7 +2,7 @@ import { z } from "zod";
 import { httpsUrl } from "@/lib/schema-fields";
 
 /** Turns "" / missing FormData entries into `undefined` before the inner schema runs. */
-function optional<T extends z.ZodTypeAny>(schema: T) {
+function optional<T extends z.ZodType>(schema: T) {
   return z.preprocess((v) => (v === "" || v == null ? undefined : v), schema.optional());
 }
 

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { httpsUrl, safeHref } from "@/lib/schema-fields";
 
-function optional<T extends z.ZodTypeAny>(schema: T) {
+function optional<T extends z.ZodType>(schema: T) {
   return z.preprocess((v) => (v === "" || v == null ? undefined : v), schema.optional());
 }
 
