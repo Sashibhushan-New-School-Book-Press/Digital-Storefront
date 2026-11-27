@@ -216,7 +216,8 @@ new file, and delete a plan once it's built or abandoned.
 
 ## Agent skills
 
-- **Issue tracker:** GitHub Issues (`tamajitghosh16/Digital-Storefront`),
-  through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+- **Issue tracker:** GitHub Issues
+  (`Sashibhushan-New-School-Book-Press/Digital-Storefront`), through the
+  `gh` CLI. See `docs/agents/issue-tracker.md`.
 - **Domain docs:** single context, with one `CONTEXT.md` plus `docs/adr/`
   at the repo root. See `docs/agents/domain.md`.
