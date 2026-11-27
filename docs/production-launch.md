@@ -191,6 +191,10 @@ import from GitHub):
   each app's `postbuild` (`scripts/standalone-assets.mjs`) copies them in.
   hPanel's build command is a pick-list of package.json scripts, so that
   copy can't live in the build command.
+- **Why Webpack.** Hostinger's build servers have a glibc older than 2.29,
+  so Next.js can't load its native compiler there and falls back to the
+  WebAssembly one. Turbopack refuses to run on that, so both apps' `build`
+  is `next build --webpack`. `next dev` still uses Turbopack locally.
 - **Environment variables.**
   - Use "Import .env" with the wizard's `.env.production.web.local` /
     `.env.production.admin.local`.
