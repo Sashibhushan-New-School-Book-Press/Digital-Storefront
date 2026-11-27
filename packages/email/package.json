@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./src/index.ts",
   "dependencies": {
-    "@react-email/components": "^0.0.31",
+    "@react-email/components": "^1.0.12",
     "react": "^19.0.0",
     "resend": "^4.0.0",
     "server-only": "^0.0.1"
