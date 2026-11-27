@@ -9,8 +9,9 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 
 export default defineConfig({
   root: appRoot,
-  // Next's tsconfig has `jsx: "preserve"`; Vitest has to compile JSX itself.
-  esbuild: { jsx: "automatic" },
+  // Next's tsconfig has `jsx: "preserve"`; Vitest has to compile JSX itself
+  // (Vite 8 transforms with Oxc, so this is `oxc`, not `esbuild`).
+  oxc: { jsx: { runtime: "automatic" } },
   resolve: {
     alias: [
       { find: /^@\//, replacement: `${appRoot}/` },

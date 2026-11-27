@@ -77,7 +77,7 @@ export const signUpSchema = z
     phone: z.string().trim().regex(PHONE_PATTERN, "Please enter a valid phone number."),
     password: z.string().superRefine((password, ctx) => {
       const failed = PASSWORD_RULES.find((rule) => !rule.test(password));
-      if (failed) ctx.addIssue({ code: z.ZodIssueCode.custom, message: failed.message });
+      if (failed) ctx.addIssue({ code: "custom", message: failed.message });
     }),
     confirmPassword: z.string(),
   })

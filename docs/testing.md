@@ -148,6 +148,9 @@ throttled mid-range phone. Hard budgets: accessibility ≥ 0.9, CLS ≤ 0.1.
 Soft (warn) budgets: performance ≥ 0.8, LCP ≤ 2.5s, TBT ≤ 300ms. Locally it
 builds and serves on :3100; after each deploy CI audits the live URL. Reports
 go to `testing/performance/reports/` (gitignored, never uploaded).
+`@lhci/cli` isn't a dependency: `test:perf` runs a pinned version through
+`npx`, because its dependency tree carries most of the audit findings and
+nothing else needs it.
 
 **Load.** autocannon drives the homepage, books listing, catalogue API and a
 policy page (default 20 connections × 20s each, `LOAD_CONNECTIONS` /

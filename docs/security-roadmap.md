@@ -58,7 +58,14 @@ marked otherwise.
 - **Retention jobs:** purge abandoned `PENDING` orders and expired
   `staff_invites`. There's no job queue, so this needs a cron route.
 - **Dependencies:** upgrade to Prisma 8 and `@react-email/components` 1.x.
-  CI reports these without blocking.
+  CI reports these without blocking. Until then, the root `package.json`
+  overrides `effect` to `^3.22.1` (GHSA-7589-6fvf-x4pw), because Prisma 7's
+  `@prisma/config` pins 3.20.0. npm 11 doesn't carry root overrides into
+  workspace packages' dependencies, so the patched version was set in
+  `package-lock.json` by hand. As a result, `npm ls` calls it invalid and
+  `npm update effect` brings 3.20.0 back; `npm ci` and `npm install` keep it.
+  Remove the override with the Prisma 8 upgrade, or it will hold back
+  whatever `effect` that version needs.
 - **Per-app Supabase secret keys** (`sb_secret_…`), replacing the shared
   `service_role` JWT.
 - **Before launch:** a ZAP scan against dev, then a third-party penetration
