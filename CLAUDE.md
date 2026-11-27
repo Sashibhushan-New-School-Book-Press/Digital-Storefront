@@ -37,9 +37,12 @@ There are two long-lived branches, one per environment
 - `dev` deploys to the dev environment (Vercel Preview).
 - `main` is production (Hostinger). A push to `main` goes live.
 
-- Work on `dev` and commit there. Don't create feature branches or git
-  worktrees, and never commit to `main` directly. If `dev` doesn't exist
-  yet, ask the user: they create it.
+- Work on `dev`. Don't create feature branches or git worktrees, and
+  never commit to `main` directly. If `dev` doesn't exist yet, ask the
+  user: they create it.
+- **Every commit needs the user's go-ahead, on `dev` and `main` alike.**
+  Finish the change, leave it uncommitted, and ask. One go-ahead covers
+  one commit, not the ones after it.
 - Merge `dev` into `main` only when the user explicitly asks for a release.
 - A release that carries a migration needs production migrated **first**:
   Actions → `db-migrate`, run from `dev`, environment `production`. Keep
@@ -216,7 +219,8 @@ new file, and delete a plan once it's built or abandoned.
 
 ## Agent skills
 
-- **Issue tracker:** GitHub Issues (`tamajitghosh16/Digital-Storefront`),
-  through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+- **Issue tracker:** GitHub Issues
+  (`Sashibhushan-New-School-Book-Press/Digital-Storefront`), through the
+  `gh` CLI. See `docs/agents/issue-tracker.md`.
 - **Domain docs:** single context, with one `CONTEXT.md` plus `docs/adr/`
   at the repo root. See `docs/agents/domain.md`.

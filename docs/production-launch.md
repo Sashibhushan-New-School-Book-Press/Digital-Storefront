@@ -174,17 +174,23 @@ import from GitHub):
 | Setting | web | admin |
 |---|---|---|
 | Domain | `www.<domain>` | `admin.<domain>` |
-| Framework / Node | Next.js / 22 | Next.js / 22 |
+| Framework preset / Node | Other / 22 | Other / 22 |
 | Branch | `main` | `main` |
-| Root directory | `/` (repo root) | `/` (repo root) |
+| Root directory | `./` (repo root) | `./` (repo root) |
 | Package manager | npm | npm |
-| Build script | `build:web` | `build:admin` |
+| Build command | `npm run build:web` | `npm run build:admin` |
 | Output directory | `apps/web/.next` | `apps/admin/.next` |
+| Entry file | `apps/web/.next/standalone/apps/web/server.js` | `apps/admin/.next/standalone/apps/admin/server.js` |
 
 - **Why the repo root.** The root directory must be the repo root, because
   the apps import `packages/*` through workspaces. Both `next.config.ts`
   files set `output: "standalone"` with tracing from the root, so Prisma
   and `sharp` are copied into the build.
+- **Why the entry file.** hPanel runs the entry file with `node`. The
+  standalone `server.js` doesn't include `public/` or `.next/static`, so
+  each app's `postbuild` (`scripts/standalone-assets.mjs`) copies them in.
+  hPanel's build command is a pick-list of package.json scripts, so that
+  copy can't live in the build command.
 - **Environment variables.**
   - Use "Import .env" with the wizard's `.env.production.web.local` /
     `.env.production.admin.local`.
@@ -194,8 +200,6 @@ import from GitHub):
 - **To reproduce Hostinger's run locally:**
   ```bash
   npm run build:web
-  cp -r apps/web/public apps/web/.next/standalone/apps/web/public
-  cp -r apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static
   PORT=3200 node --env-file=apps/web/.env.local apps/web/.next/standalone/apps/web/server.js
   ```
 - **DNS** goes in hPanel → Domains → DNS.
