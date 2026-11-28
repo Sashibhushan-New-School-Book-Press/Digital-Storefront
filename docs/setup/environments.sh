@@ -330,7 +330,10 @@ build_runtime_url() {
   local uri="$1" rest userinfo hostpart user
   rest="${uri#*://}"; userinfo="${rest%%@*}"; hostpart="${rest#*@}"; hostpart="${hostpart%%\?*}"
   user="${userinfo%%:*}"
-  printf 'postgresql://app_runtime.%s:%s@%s?pgbouncer=true&sslmode=require' \
+  # uselibpqcompat: node-postgres treats a bare sslmode=require as verify-full,
+  # which rejects the pooler's certificate (Supabase's own CA); with it,
+  # require means what it does in libpq: encrypted, server not verified.
+  printf 'postgresql://app_runtime.%s:%s@%s?pgbouncer=true&uselibpqcompat=true&sslmode=require' \
     "${user#postgres.}" "$APP_RUNTIME_PASSWORD" "$hostpart"
 }
 
@@ -590,7 +593,7 @@ s6() {
   [[ "$POOLER_URI" == *":6543/"* ]] || warn "Expected port 6543."
   DATABASE_URL=$(build_runtime_url "$POOLER_URI")
   write_env DATABASE_URL "$DATABASE_URL"
-  note "DATABASE_URL = app_runtime on port 6543 with pgbouncer=true&sslmode=require."
+  note "DATABASE_URL = app_runtime on port 6543 with pgbouncer=true&uselibpqcompat=true&sslmode=require."
   pause
 }
 
