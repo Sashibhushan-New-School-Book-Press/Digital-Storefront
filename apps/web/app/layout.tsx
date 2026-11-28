@@ -11,6 +11,7 @@ import { WishlistProvider } from "@/components/commerce/wishlist-provider";
 import { CartSync } from "@/components/commerce/cart-sync";
 import { getCurrentUser } from "@repo/auth/server";
 import { withFallback } from "@/lib/safe-fetch";
+import { SAMPLE_SITE_SETTINGS } from "@/lib/sample-data";
 import { mailtoUrl, whatsAppUrl } from "@/lib/contact";
 import { headers } from "next/headers";
 
@@ -19,9 +20,10 @@ import { headers } from "next/headers";
 // 400 and 700, so nothing else is loaded.
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
 
-// Admin-controlled via Settings > Site Settings in apps/admin.
+// Admin-controlled via Settings > Site Settings in apps/admin. Falls back like
+// every other caller: a failed read must not leave pages without a <title>.
 export async function generateMetadata(): Promise<Metadata> {
-  const settings = await getCachedSiteSettings();
+  const settings = await withFallback(() => getCachedSiteSettings(), SAMPLE_SITE_SETTINGS);
   return {
     title: settings.metaTitle || settings.siteName,
     description: settings.metaDescription ?? undefined,

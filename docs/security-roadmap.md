@@ -71,6 +71,15 @@ marked otherwise.
     `@vercel/blob` 2.x only takes `@vercel/oidc` 3.x, whose
     `@vercel/cli-config` 0.3.1 pins zod 4.1.11. Remove the override once
     `@vercel/blob` moves to `@vercel/oidc` 5 (`@vercel/cli-config` 0.4+).
+- **Verify the database server's certificate.** `DATABASE_URL` uses
+  `uselibpqcompat=true&sslmode=require`: encrypted, but the pooler's
+  certificate isn't checked. node-postgres treats a bare `sslmode=require` as
+  verify-full, and the pooler's chain ends at Supabase's own "Supabase Root
+  2021 CA", so without the flag every query failed (`SELF_SIGNED_CERT_IN_CHAIN`)
+  and the storefront silently served `lib/sample-data`. To verify: ship that
+  root certificate (Database settings → SSL, "Download certificate") and pass
+  it as `ssl.ca` to `PrismaPg` in `packages/database/src/client.ts`, then drop
+  `sslmode` from the URL, because a URL's `sslmode` overrides `ssl`.
 - **Per-app Supabase secret keys** (`sb_secret_…`), replacing the shared
   `service_role` JWT.
 - **Before launch:** a ZAP scan against dev, then a third-party penetration
